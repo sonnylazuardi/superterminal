@@ -395,3 +395,58 @@ This is a verification crutch, not a supported setup: it lives outside the repo,
 the resulting `.node` needs `LD_LIBRARY_PATH` at run time. **CI must use real
 packages.** Everything in §4 and §5 above was verified through this prefix; the
 build itself is unmodified.
+
+---
+
+## Running it (added after the first end-to-end bring-up, 2026-08-31)
+
+```bash
+./scripts/run.sh              # build what is missing, start daemon + client
+./scripts/run.sh --no-build   # run what is already built
+```
+
+`scripts/env.sh` is the single source of build/run environment and is sourced by
+`run.sh`; source it yourself if you are running pieces by hand.
+
+Four things bit us on first launch on this box. All are handled by the scripts
+now, but they are worth knowing:
+
+1. **The npm prebuilt `@gpuix/native-linux-x64-gnu` needs GLIBC 2.39** and this
+   machine has 2.35, so it fails with `version 'GLIBC_2.39' not found`. Our own
+   `.node` is built locally against the running glibc and is a drop-in superset.
+   `env.sh` points `NAPI_RS_NATIVE_LIBRARY_PATH` at it, which gpuix's loader
+   checks before anything else.
+2. **The sysroot must survive a reboot.** It now lives at
+   `~/.local/share/superterminal/sysroot`, not `/tmp`. `env.sh` exports both the
+   build variables (`PKG_CONFIG_*`, `CPATH`, `LIBRARY_PATH`) and the runtime one
+   (`LD_LIBRARY_PATH`) — the runtime one matters because `libxkbcommon-x11.so.0`
+   and `libvulkan.so.1` are not installed system-wide.
+3. **WSL defaults to the X11 backend.** WSLg offers Wayland and X11. Under
+   Wayland, GPUI uses client-side decorations and draws no window controls, so
+   the window has no close button and cannot be resized. Under X11, WSLg hands
+   the window to Windows, which draws a real title bar and resize borders.
+   `ST_FORCE_WAYLAND=1` opts back in.
+4. **`<terminal-grid>` needs `socketPath`.** The element opens its own
+   data-plane connection (Q13/Q14); without the prop the window renders chrome
+   and no terminal. `st status` showing `N control, 0 data` clients is the
+   symptom.
+
+## macOS status
+
+`cargo check --workspace --all-targets --target aarch64-apple-darwin` passes
+with **zero errors** from Linux, so every non-GPU crate (`st-proto`,
+`st-config`, `st-core`, `st-client-core`, `st-server`, `st-cli`) is
+cfg-correct for macOS, tests included.
+
+`crates/st-native` cannot be cross-checked from Linux: `onig_sys` (a C library
+reached through gpuix's syntect dependency) needs an Apple-targeting C compiler.
+That is an environment limitation, not a code problem — gpuix publishes a
+darwin-arm64 prebuilt of the same dependency graph. It must be built on a Mac.
+
+Still open on macOS, none of it verified because no host was available:
+- `st_core::cwd::probe_process_cwd` returns `None`; the `proc_pidinfo` path is a
+  TODO, so cwd tracking relies on OSC 7 alone.
+- HANDOVER V2 (do `#[napi]` registration symbols survive `-dead_strip`?) is
+  unanswered; the thin-delegate fallback in `04-client-native.md` §1.3 is the
+  contingency.
+- Nothing has ever been run on macOS. Treat the first launch as bring-up.

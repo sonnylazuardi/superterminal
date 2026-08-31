@@ -18,7 +18,7 @@ import '../native/terminal-grid.js';
 import { useServices, useWorkspace } from './context.js';
 
 export function SurfaceHost() {
-  const { tokens, registry, config, store, commandBus } = useServices();
+  const { tokens, registry, config, store, commandBus, socketPath } = useServices();
   const surface = useWorkspace(selectActiveSurface);
   const command = useSyncExternalStore(
     commandBus.subscribe,
@@ -46,6 +46,10 @@ export function SurfaceHost() {
         key={surface.id}
         testId={`terminal-grid-${surface.id}`}
         surfaceId={surface.id}
+        // The element opens its OWN data-plane connection (Q13/Q14): cell data
+        // never passes through JavaScript, so it needs the socket path, not a
+        // handle to our control-plane client.
+        socketPath={socketPath}
         {...(config.font.family ? { fontFamily: config.font.family } : {})}
         fontSize={config.font.size}
         lineHeight={config.font.lineHeight}

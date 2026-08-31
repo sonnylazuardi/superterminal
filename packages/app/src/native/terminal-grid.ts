@@ -26,6 +26,12 @@ export interface TerminalGridProps {
   key?: string | number | null;
   /** Changing this detaches the old surface and attaches the new one. */
   surfaceId: number;
+  /**
+   * Unix socket the element dials for its OWN data-plane connection (Q13/Q14).
+   * Cell data never crosses into JavaScript, so the element connects itself
+   * rather than borrowing the app's control-plane client.
+   */
+  socketPath?: string;
   fontFamily?: string;
   fontSize?: number;
   lineHeight?: number;

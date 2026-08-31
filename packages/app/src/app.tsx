@@ -66,6 +66,7 @@ export function main(argvInput: string[] = Bun.argv.slice(2)): void {
     platform: boot.platform,
     config: boot.config,
     commandBus: boot.commandBus,
+    socketPath: boot.socketPath,
   };
 
   const windowOptions = buildWindowOptions(boot.config, boot.platform);

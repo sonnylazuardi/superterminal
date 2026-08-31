@@ -25,6 +25,11 @@ export interface AppServices {
   config: Config;
   /** One-shot `<terminal-grid>` commands (copy/paste/clear). */
   commandBus: NativeCommandBus;
+  /**
+   * Socket the daemon listens on. Passed down to `<terminal-grid>`, which
+   * opens its own data-plane connection to it (Q13/Q14).
+   */
+  socketPath: string;
 }
 
 const AppContext = createContext<AppServices | null>(null);

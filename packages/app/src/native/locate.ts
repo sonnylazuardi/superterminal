@@ -128,7 +128,12 @@ export function candidatePaths(env: LocateEnv): string[] {
   // Any other .node already sitting in packages/native (e.g. a differently
   // named local build) or in the cargo output directory.
   out.push(...env.listNodeFiles(join(root, 'packages', 'native')));
+  // `napi build` in crates/st-native writes here; this is the real dev output.
+  out.push(join(root, 'crates', 'st-native', 'dist', `superterminal-native.${triple}.node`));
+  out.push(...env.listNodeFiles(join(root, 'crates', 'st-native', 'dist')));
+  // Plain `cargo build` output, release then debug.
   out.push(...env.listNodeFiles(join(root, 'crates', 'st-native', 'target', 'release')));
+  out.push(...env.listNodeFiles(join(root, 'crates', 'st-native', 'target', 'debug')));
   if (isCompiled(env)) {
     // `bun build --compile --asset packages/native/...` keeps the relative path
     // under the virtual /$bunfs/root tree (05 §10).
