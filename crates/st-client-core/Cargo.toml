@@ -1,0 +1,19 @@
+[package]
+name = "st-client-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+bitflags = "2.13.1"
+parking_lot = "0.12.5"
+st-proto = { path = "../st-proto" }
+thiserror = "2.0.20"
+tracing = "0.1.41"
+
+[dev-dependencies]
+proptest = "1.11.0"

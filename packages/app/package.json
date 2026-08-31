@@ -1,0 +1,21 @@
+{
+  "name": "@superterminal/app",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "src/app.tsx",
+  "scripts": {
+    "dev": "bun --hot src/app.tsx",
+    "test": "bun test src",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@gpuix/react": "^0.6.0",
+    "@superterminal/protocol-ts": "workspace:*",
+    "react": "^19.2.8",
+    "zod": "^4.5.4"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.0"
+  }
+}

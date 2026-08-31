@@ -1,0 +1,19 @@
+# Clippy configuration. Lint *levels* live in Cargo.toml ([workspace.lints]) and
+# in the CI invocation (`cargo clippy --workspace --all-targets -- -D warnings`);
+# this file only holds the knobs that configure individual lints.
+
+# Matches rust-version = "1.85" in the workspace Cargo.toml, so clippy does not
+# suggest APIs newer than our MSRV (docs/plan/06-testing-perf-ci.md §5).
+msrv = "1.85"
+
+# The terminal grid is full of small Copy structs (Cell, Point, Style) that are
+# passed by value everywhere. The default 8-byte threshold turns that into noise.
+trivial-copy-size-limit = 16
+
+# Snapshot/Delta frames legitimately carry large enum variants; 256 bytes is the
+# point at which boxing actually starts paying for itself here.
+enum-variant-size-threshold = 256
+
+# Terminal code has real reasons for dense boolean logic in the VT state machine.
+too-many-arguments-threshold = 8
+type-complexity-threshold = 500

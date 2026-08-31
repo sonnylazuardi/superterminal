@@ -1,0 +1,9 @@
+[run]
+preload = ["./packages/app/src/native/preload.ts"]
+
+[test]
+preload = ["./packages/app/src/native/preload.ts"]
+# Keep `bun test` inside our workspaces. Without this it descends into
+# vendor/gpuix (a git submodule) and runs gpuix's own GPU-backed suite, which
+# fails with "Native TestGpuixRenderer not available" in a headless environment.
+root = "packages"

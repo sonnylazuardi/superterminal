@@ -1,0 +1,36 @@
+[package]
+name = "st-server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "superterminald: the Superterminal daemon (control plane)"
+
+[lints]
+workspace = true
+
+[lib]
+name = "st_server"
+path = "src/lib.rs"
+
+[[bin]]
+name = "superterminald"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0.104"
+clap = { version = "4.6.6", features = ["derive"] }
+rustix = { version = "1.1.4", features = ["fs", "process"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+st-config = { version = "0.1.0", path = "../st-config" }
+st-core = { version = "0.1.0", path = "../st-core" }
+st-proto = { version = "0.1.0", path = "../st-proto" }
+thiserror = "2.0.20"
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "net", "sync", "time", "signal", "macros", "io-util"] }
+tracing = "0.1.44"
+tracing-appender = "0.2.5"
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "env-filter", "ansi"] }
+
+[dev-dependencies]
+tempfile = "3.27.0"

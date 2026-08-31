@@ -1,0 +1,52 @@
+{
+  // Base config for every Bun workspace under packages/*. It has no `include`
+  // and is never built directly -- each package extends it and supplies its own
+  // `include`/`outDir`. See packages/app/tsconfig.json.
+  "compilerOptions": {
+    // --- Language and module resolution -----------------------------------
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    // Bun resolves imports the way a bundler does: extensionless, package
+    // "exports" aware, no need for .js suffixes on relative imports.
+    "moduleResolution": "bundler",
+    "moduleDetection": "force",
+    "allowImportingTsExtensions": true,
+    "resolveJsonModule": true,
+    "verbatimModuleSyntax": true,
+
+    // --- JSX ---------------------------------------------------------------
+    // The app renders through gpuix, not react-dom: JSX compiles to
+    // @gpuix/react's jsx runtime (docs/plan/05-client-app.md).
+    "jsx": "react-jsx",
+    "jsxImportSource": "@gpuix/react",
+
+    // --- Type checking: strict, plus the checks `strict` leaves off ---------
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "noPropertyAccessFromIndexSignature": true,
+    "exactOptionalPropertyTypes": true,
+    "useUnknownInCatchVariables": true,
+    "allowUnreachableCode": false,
+    "allowUnusedLabels": false,
+    // Unused locals/params are reported by the linter, not by tsc: leaving them
+    // as type errors makes an in-progress edit unbuildable.
+    "noUnusedLocals": false,
+    "noUnusedParameters": false,
+
+    // --- Emit ---------------------------------------------------------------
+    // Bun executes TypeScript directly; tsc is only ever run as `--noEmit`.
+    "noEmit": true,
+    "isolatedModules": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true,
+
+    // --- Runtime types ------------------------------------------------------
+    "types": ["bun"]
+  }
+}

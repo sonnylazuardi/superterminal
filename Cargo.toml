@@ -1,0 +1,27 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/st-proto",
+    "crates/st-config",
+    "crates/st-core",
+    "crates/st-server",
+    "crates/st-client-core",
+    "crates/st-cli",
+]
+# crates/st-native is excluded from the default workspace: it depends on the
+# vendored gpuix/GPUI checkout, which needs a GPU toolchain (see docs/DEV.md).
+exclude = ["crates/st-native", "vendor"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "Apache-2.0"
+repository = "https://github.com/sonnylazuardi/superterminal"
+
+[workspace.lints.rust]
+unsafe_code = "warn"
+
+[profile.release]
+lto = "thin"
+debug = 1

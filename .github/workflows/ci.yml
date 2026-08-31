@@ -1,0 +1,229 @@
+# superterminal CI (M0-11, docs/plan/06-testing-perf-ci.md §4).
+#
+# Shape of this file in M0:
+#   rust   - fmt + clippy + tests on the non-GPU workspace. Blocking.
+#   bun    - typecheck + bun test on Linux. Blocking.
+#   deny   - license/advisory gate. Blocking.
+#   native - the gpuix/GPUI build. Allowed to fail, see the comment on the job.
+#
+# §4.3 of the plan splits this further (lint / test-rust / test-bun / native /
+# e2e / e2e-linux) once the render and e2e suites exist (M2+). Until then the
+# lint work rides along in `rust` so a PR only spins up four jobs.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# One run per ref. A new push supersedes whatever was already queued, which
+# matters most for `native`: a 60 minute GPU build is not worth finishing for a
+# commit that has already been replaced.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Rust: the workspace only. `crates/st-native` is excluded from the workspace
+  # in Cargo.toml precisely so this job never touches the vendored GPUI tree,
+  # which keeps it in the ~8 min warm budget from §4.4.
+  # ---------------------------------------------------------------------------
+  rust:
+    name: rust (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    continue-on-error: ${{ matrix.allow-fail }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            allow-fail: false
+          - os: macos-14
+            allow-fail: false
+          # Windows is deferred (Q3, M6-10). It builds but is never a merge
+          # blocker; the job exists so the eventual port has a signal to read.
+          - os: windows-2022
+            allow-fail: true
+    steps:
+      # No submodules: vendor/gpuix is only needed by the `native` job.
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo registry and target/
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+          # rust-cache already keys on Cargo.lock, the OS and the toolchain
+          # version; the pin file is folded in so a re-pin invalidates every
+          # cache at once. hashFiles tolerates docs/PINS.md not existing yet.
+          key: ${{ hashFiles('rust-toolchain.toml', 'docs/PINS.md') }}
+
+      - name: cargo fmt
+        run: cargo fmt --all --check
+
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: cargo test
+        run: cargo test --workspace
+
+  # ---------------------------------------------------------------------------
+  # Bun: typecheck + the non-renderer test suite. Renderer tests
+  # (*.render.test.tsx, TestGpuixRenderer) land in M2 and run on macos-14 only
+  # per Q47; this job is Linux-only until then.
+  # ---------------------------------------------------------------------------
+  bun:
+    name: bun
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+
+      - name: bun install
+        run: bun install --frozen-lockfile
+
+      - name: typecheck
+        run: bun run typecheck
+
+      - name: bun test
+        run: bun test
+
+  # ---------------------------------------------------------------------------
+  # Native: builds crates/st-native against the vendored gpuix/GPUI submodule.
+  #
+  # WHY continue-on-error IS TRUE IN M0
+  # -----------------------------------
+  # 1. GPU toolchain heaviness. This is the only job that compiles the whole
+  #    GPUI dependency graph: Vulkan/Metal shader tooling, cmake+clang for the
+  #    C/C++ deps, font and windowing system libraries. A cold build is 15-25
+  #    min per OS (§4.4) and depends on system packages that shared runners
+  #    change without notice. A hosted-runner image update must not be able to
+  #    block every unrelated PR in the repo.
+  # 2. M0 status. Through M0 the submodule pin, the factory-hook patch
+  #    (patches/0001-factory-hook.patch) and the build recipe are all still
+  #    moving (M0-02, M0-06, M0-10). The job is here to produce a signal and an
+  #    artifact to download, not yet to gate merges.
+  #
+  # Flip continue-on-error to false once M1 lands and the build has been green
+  # on both OSes for a week. §4.4 also treats a *warm* run over 30 min as a
+  # regression in its own right, even while the job is allowed to fail.
+  # ---------------------------------------------------------------------------
+  native:
+    name: native (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, ubuntu-22.04]
+    env:
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: "true"
+    steps:
+      # Submodules ARE needed here: vendor/gpuix is the GPUI checkout.
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Linux system deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libvulkan-dev \
+            libfontconfig1-dev \
+            libwayland-dev \
+            libxkbcommon-dev \
+            libx11-dev \
+            libxcb1-dev \
+            libasound2-dev \
+            cmake \
+            clang
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install just
+        uses: extractions/setup-just@v2
+
+      - name: Install sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+
+      # The Zed commit that gpuix path-depends on is recorded in docs/PINS.md
+      # (M0-02). Keying the cache on that file plus the submodule pin in
+      # .gitmodules/.git means a re-pin gets a cold build exactly once, and
+      # every PR that does not touch the pin reuses the objects. hashFiles
+      # tolerates docs/PINS.md not existing yet.
+      - name: Resolve gpuix submodule SHA
+        id: pin
+        shell: bash
+        run: echo "sha=$(git rev-parse HEAD:vendor/gpuix)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache cargo registry and target/ (keyed on the Zed pin)
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            crates/st-native -> crates/st-native/target
+          key: native-${{ matrix.os }}-${{ steps.pin.outputs.sha }}-${{ hashFiles('docs/PINS.md', 'patches/**') }}
+
+      - name: Apply the gpuix factory-hook patch
+        run: just vendor-patch
+
+      - name: Build the native module
+        run: just build-native
+
+      - name: sccache stats
+        if: always()
+        run: sccache --show-stats
+
+      - name: Upload .node artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: st-native-${{ matrix.os }}
+          path: |
+            crates/st-native/**/*.node
+            packages/app/**/*.node
+          if-no-files-found: warn
+          retention-days: 14
+
+  # ---------------------------------------------------------------------------
+  # Licenses and advisories. See deny.toml.
+  # ---------------------------------------------------------------------------
+  deny:
+    name: cargo-deny
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+      # `sources` is deliberately not checked yet: the vendored gpuix submodule
+      # policy is settled in M0-02, not here.
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check licenses bans advisories

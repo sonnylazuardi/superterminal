@@ -1,0 +1,119 @@
+From: superterminal <noreply@superterminal.dev>
+Subject: [PATCH] gpuix: let a downstream crate register CustomElementFactories
+
+`GpuixRenderer` is constructed from JS by `@gpuix/react`, so a Rust crate that
+links `gpuix-native` as an rlib never holds the value and cannot pass factories
+into `init`. Add a process-global list of factory *constructors* that
+`CustomElementRegistry::with_defaults` invokes.
+
+Constructors rather than boxed factories, so `with_defaults` stays idempotent:
+`GpuixView::new` runs once per window and once per `TestGpuixRenderer`, and a
+drained list would leave every registry after the first without our elements.
+
+Four visibility changes come with it, each forced by a compile or test failure
+in a downstream crate rather than by taste:
+
+  * `pub mod custom_elements` plus a `pub use` facade in `lib.rs` — otherwise
+    the traits cannot be named at all.
+  * `pub struct GpuixView` — `CustomElement::render` takes a
+    `gpui::Context<GpuixView>`, so an out-of-tree impl has to name that type.
+  * `pub fn apply_interactive_styles` — otherwise an out-of-tree element
+    silently ignores the `style` prop that every built-in one honours.
+  * `pub mod automation` — its `track_own_bounds` is already `pub`, but the
+    module is not, so a downstream element never appears in
+    `getAutomationTree()` and no JS-side test can assert on it.
+
+No JS change, no change to any existing behaviour: the new global is empty
+unless something calls `register_global_factory`.
+
+See docs/plan/04-client-native.md 1.2 option (b).
+---
+diff --git a/packages/native/src/custom_elements/mod.rs b/packages/native/src/custom_elements/mod.rs
+index b3811c1..bb6a111 100644
+--- a/packages/native/src/custom_elements/mod.rs
++++ b/packages/native/src/custom_elements/mod.rs
+@@ -218,6 +218,26 @@ pub trait CustomElementFactory: 'static {
+     fn create(&self, id: u64) -> Box<dyn CustomElement>;
+ }
+ 
++// ── Downstream factory registration (superterminal) ────────────────
++
++/// Constructor for a factory contributed by an embedding crate.
++type GlobalFactoryCtor = Box<dyn Fn() -> Box<dyn CustomElementFactory> + Send>;
++
++static GLOBAL_FACTORIES: std::sync::Mutex<Vec<GlobalFactoryCtor>> =
++    std::sync::Mutex::new(Vec::new());
++
++/// Register a custom element type from a crate that links `gpuix-native` as an
++/// rlib. Call it before `GpuixRenderer::init`; a module-init in the embedding
++/// cdylib runs early enough. `CustomElementRegistry::with_defaults` invokes every
++/// constructor once, so a second window or a `TestGpuixRenderer` gets its own
++/// instances instead of racing over a drained list.
++pub fn register_global_factory<F>(ctor: F)
++where
++    F: Fn() -> Box<dyn CustomElementFactory> + Send + 'static,
++{
++    GLOBAL_FACTORIES.lock().unwrap().push(Box::new(ctor));
++}
++
+ // ── Registry ─────────────────────────────────────────────────────────
+ 
+ /// Stores one custom adapter together with the state already synchronized into it.
+@@ -285,6 +305,9 @@ impl CustomElementRegistry {
+         registry.register(Box::new(code::CodeFactory));
+         registry.register(Box::new(diff::DiffFactory));
+         registry.register(Box::new(markdown::MarkdownFactory));
++        for ctor in GLOBAL_FACTORIES.lock().unwrap().iter() {
++            registry.register(ctor());
++        }
+         registry
+     }
+ 
+diff --git a/packages/native/src/lib.rs b/packages/native/src/lib.rs
+index bfb9dda..c7391a3 100644
+--- a/packages/native/src/lib.rs
++++ b/packages/native/src/lib.rs
+@@ -2,9 +2,9 @@
+ 
+ #[cfg(target_os = "macos")]
+ mod app_menu;
+-mod automation;
++pub mod automation;
+ mod color;
+-mod custom_elements;
++pub mod custom_elements;
+ mod diff;
+ mod element_tree;
+ mod markdown;
+@@ -27,3 +27,9 @@ mod test_renderer;
+ pub use element_tree::*;
+ pub use renderer::*;
+ pub use style::*;
++
++// superterminal: names an embedding cdylib needs in order to define and
++// register its own custom elements. See `custom_elements`.
++pub use custom_elements::{
++    register_global_factory, CustomElement, CustomElementFactory, CustomRenderContext,
++};
+diff --git a/packages/native/src/renderer.rs b/packages/native/src/renderer.rs
+index 9620967..7c3fb47 100644
+--- a/packages/native/src/renderer.rs
++++ b/packages/native/src/renderer.rs
+@@ -2628,7 +2628,7 @@ impl Drop for GpuixRenderer {
+ 
+ // ── GPUI View ────────────────────────────────────────────────────────
+ 
+-pub(crate) struct GpuixView {
++pub struct GpuixView {
+     pub(crate) tree: Arc<Mutex<RetainedTree>>,
+     pub(crate) event_callback: Option<EventCallback>,
+     pub(crate) window_title: String,
+@@ -4395,7 +4395,7 @@ pub(crate) fn apply_height<E: gpui::Styled>(el: E, dim: &crate::style::Dimension
+ /// element that only applied the base styles accepted the prop, serialized it,
+ /// and dropped it. gpui reads both refinements from the element state behind the
+ /// element's `ElementId`, so the caller must have called `.id(..)` first.
+-pub(crate) fn apply_interactive_styles<E>(mut el: E, style: &StyleDesc) -> E
++pub fn apply_interactive_styles<E>(mut el: E, style: &StyleDesc) -> E
+ where
+     E: gpui::Styled + gpui::StatefulInteractiveElement,
+ {

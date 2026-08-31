@@ -1,0 +1,22 @@
+{
+  "name": "@superterminal/native",
+  "version": "0.1.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "main": "index.js",
+  "napi": {
+    "binaryName": "superterminal-native",
+    "targets": [
+      "x86_64-unknown-linux-gnu",
+      "aarch64-apple-darwin",
+      "x86_64-pc-windows-msvc"
+    ]
+  },
+  "scripts": {
+    "build": "napi build --platform --release --output-dir ../../packages/app/native",
+    "build:debug": "napi build --platform --output-dir ../../packages/app/native"
+  },
+  "devDependencies": {
+    "@napi-rs/cli": "^3.1.3"
+  }
+}

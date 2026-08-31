@@ -1,0 +1,53 @@
+# Dependency updates. Monthly on purpose: this project pins a vendored
+# GPUI/Zed checkout and a Rust MSRV, so a weekly firehose of PRs would cost
+# more review time than it saves. See docs/plan/06-testing-perf-ci.md §4.
+version: 2
+
+updates:
+  # Rust workspace. crates/st-native is excluded from the workspace and is not
+  # covered here; its dependency graph moves with the gpuix pin (docs/PINS.md),
+  # which is re-pinned by hand.
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: monthly
+      day: monday
+      time: "06:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps(cargo)"
+    groups:
+      cargo-minor-and-patch:
+        update-types: [minor, patch]
+
+  # Bun workspaces under packages/*. Dependabot has no native Bun support; the
+  # npm ecosystem reads package.json and leaves bun.lock alone, so a merged PR
+  # needs `bun install` before `--frozen-lockfile` passes in CI.
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: monthly
+      day: monday
+      time: "06:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps(npm)"
+    groups:
+      npm-minor-and-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: monthly
+      day: monday
+      time: "06:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps(actions)"
+    groups:
+      github-actions:
+        patterns: ["*"]

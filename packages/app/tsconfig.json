@@ -1,0 +1,14 @@
+{
+  // The gpuix/React GUI client. Checked by `bun run typecheck`
+  // (see the root package.json) and by the `bun` job in CI.
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "baseUrl": ".",
+    "paths": {
+      "@app/*": ["src/*"]
+    }
+  },
+  "include": ["src/**/*.ts", "src/**/*.tsx"],
+  "exclude": ["node_modules", "dist", "target"]
+}

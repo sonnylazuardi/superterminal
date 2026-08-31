@@ -1,0 +1,45 @@
+From: superterminal <noreply@superterminal.dev>
+Subject: [PATCH] gpuix: fix double-lease panic in simulateClick/simulateMouse* on Linux
+
+`GpuixRenderer::simulate_click` (and the other `MouseInput` variants) route
+through `UiCommand::DispatchMouse`, which dispatches inside
+`WindowHandle::<GpuixView>::update`. That leases `GpuixView` for the whole
+dispatch. gpuix then registers a root-level MouseUp handler in
+`text::paint::register_drag_listeners`, whose `on_drag_end` closure updates that
+same view — a second lease — so *every* synthetic left click panics the
+`gpuix-ui` thread:
+
+    thread 'gpuix-ui' panicked at gpui/src/app/entity_map.rs:142:
+    cannot update gpuix_native::renderer::GpuixView while it is already being updated
+
+after which every napi call fails with "The GPUI UI thread is not running".
+
+Real compositor input is unaffected: it is dispatched from the platform event
+loop without an outer view lease. Only the automation path is broken, which is
+why gpuix's own suite (macOS/Windows `TestGpuixRenderer` only) never hits it.
+
+The `UiCommand::DispatchKey` arm immediately below already dispatches through
+`gpui::AnyWindowHandle`, which does not lease the view. Do the same for mouse.
+
+Verified on Linux/WSLg with gpuix 0.6.0: 50 `simulateClick` calls on the counter
+example take the count 0 -> 50 with no panic; before this change the first click
+killed the UI thread. Applies on top of 0001. File upstream and drop this patch
+when it lands.
+---
+--- a/packages/native/src/renderer.rs
++++ b/packages/native/src/renderer.rs
+@@ -626,7 +626,13 @@
+                 })
+             }
+             UiCommand::DispatchMouse { input, response } => {
+-                let result = window.update(cx, move |_view, window, cx| match input {
++                // `WindowHandle::<GpuixView>::update` leases the view for the whole
++                // dispatch, and gpuix's own root MouseUp handler
++                // (`text::paint::register_drag_listeners` -> `on_drag_end`) updates
++                // that same view -> double-lease panic. Go through the erased handle
++                // instead, exactly as the `DispatchKey` arm below already does.
++                let handle = gpui::AnyWindowHandle::from(window);
++                let result = handle.update(cx, move |_view, window, cx| match input {
+                     MouseInput::Click {
+                         x,
+                         y,

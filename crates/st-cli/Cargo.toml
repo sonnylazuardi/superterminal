@@ -1,0 +1,32 @@
+[package]
+name = "st-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "st: the Superterminal control/inspection CLI"
+
+[lints]
+workspace = true
+
+[lib]
+name = "st_cli"
+path = "src/lib.rs"
+
+[[bin]]
+name = "st"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0.104"
+clap = { version = "4.5", features = ["derive", "env", "wrap_help"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+st-config = { path = "../st-config" }
+st-proto = { path = "../st-proto" }
+thiserror = "2.0.20"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "ansi"] }
+
+[dev-dependencies]
+tempfile = "3.27.0"

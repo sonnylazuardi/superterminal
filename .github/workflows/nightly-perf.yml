@@ -1,0 +1,89 @@
+# Nightly performance run (docs/plan/06-testing-perf-ci.md §4.3, Q47).
+#
+# Q47 is explicit: nightly perf runs on a SELF-HOSTED runner (the dev box),
+# never on shared GitHub runners. Shared-runner numbers are noise -- neighbours
+# on the same host, no fixed GPU, no fixed thermal envelope -- and the M2 gate
+# is decided on real hardware.
+name: Nightly perf
+
+on:
+  schedule:
+    # 04:17 UTC daily. Off the hour so it does not queue behind the crowd of
+    # cron jobs that every repository on GitHub schedules at :00.
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+    inputs:
+      scenarios:
+        description: "Comma-separated scenario filter (empty = all)"
+        required: false
+        default: ""
+
+concurrency:
+  group: nightly-perf-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  perf:
+    name: perf (self-hosted)
+    # The runner is the dev box, labelled `superterminal-perf`. Nothing else in
+    # this repository targets that label.
+    runs-on: [self-hosted, superterminal-perf]
+    timeout-minutes: 120
+    # Forks do not have the self-hosted runner and must never schedule jobs onto
+    # it. This guard makes a fork's nightly a no-op instead of a job that hangs
+    # forever waiting for a runner that will not appear.
+    if: github.repository_owner == 'sonnylazuardi'
+    env:
+      CARGO_TERM_COLOR: always
+      RUST_BACKTRACE: 1
+    steps:
+      # The perf harness drives the real client, so the GPUI submodule is needed.
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # The self-hosted runner is a persistent box: Rust, just and Bun are
+      # installed on it directly rather than re-provisioned every night. Only
+      # Bun is set up here because bun.lock changes with the app.
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+
+      - name: bun install
+        run: bun install --frozen-lockfile
+
+      - name: Apply the gpuix factory-hook patch
+        run: just vendor-patch
+
+      - name: Build the native module
+        run: just build-native
+
+      # `just perf` runs the st-bench scenarios and writes docs/perf/<date>.json.
+      # NOTE: the `perf` recipe itself lands in M2 (M2-10, the st-bench harness).
+      # Until then this step fails and the nightly is expected to be red; it is
+      # wired up now so the runner, the artifact path and the regression gate
+      # are all proven before there is anything to measure.
+      - name: Run the perf harness
+        # The dispatch input goes through the environment rather than straight
+        # into the command line so it cannot inject shell.
+        env:
+          SCENARIOS: ${{ github.event.inputs.scenarios }}
+        run: just perf "${SCENARIOS:-}"
+
+      - name: Upload perf JSON
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-${{ github.run_id }}
+          path: docs/perf/*.json
+          if-no-files-found: warn
+          retention-days: 90
+
+      # Fails the run if any scenario regressed more than 15% against the median
+      # of the last 7 days. See scripts/perf-compare.ts.
+      - name: Compare against the 7-day median
+        run: bun run scripts/perf-compare.ts --dir docs/perf --window 7 --threshold 0.15

@@ -1,0 +1,64 @@
+[package]
+name = "st-native"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+publish = false
+description = "superterminal's Node-API addon: gpuix-native plus our GPUI custom elements"
+
+# Standalone workspace on purpose. The root Cargo.toml lists this crate under
+# `exclude`, so `cargo build --workspace` never drags in GPUI (~700 crates, a
+# GPU toolchain, and the vendored Zed checkout). Building it is an explicit
+# `cd crates/st-native && cargo build`. See docs/PINS.md §5 and docs/DEV.md.
+[workspace]
+
+[lib]
+# One cdylib for the whole process: `gpuix-native` is linked in as an rlib so
+# there is exactly one GPUI runtime and one CustomElementRegistry.
+# See docs/plan/04-client-native.md §1.3 option B.
+crate-type = ["cdylib"]
+
+[dependencies]
+gpuix-native = { path = "../../vendor/gpuix/packages/native" }
+# Same path as gpuix-native's own dependency, so cargo resolves one `gpui`.
+gpui = { path = "../../vendor/gpuix/zed/crates/gpui", default-features = false, features = [
+    "font-kit",
+    "profiler",
+] }
+napi = { version = "3", features = ["napi8", "serde-json"] }
+napi-derive = "3"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["raw_value"] }
+# The pure-logic half of the client (invariant I9: no GPUI in there, no
+# terminal logic in here). Path dep into the *root* workspace; cargo reads its
+# `version.workspace = true` from `../../Cargo.toml` without making us a member.
+st-client-core = { path = "../st-client-core" }
+st-proto = { path = "../st-proto" }
+# `futures::channel::mpsc` is how gpuix itself pokes the GPUI run loop from a
+# foreign thread (`renderer.rs::run_ui_commands`); the data plane wake uses the
+# same trick. Same version gpui already resolves.
+futures = "0.3"
+parking_lot = "0.12"
+tracing = "0.1"
+
+[build-dependencies]
+napi-build = "2"
+
+# napi-rs registers every `#[napi]` item through a `.init_array` constructor
+# static. Those live in `gpuix-native`, which we link as an rlib, and a linker
+# pulls an object out of an archive only when something already needs a symbol
+# from it. Forcing gpuix-native into a single codegen unit makes the whole crate
+# one object, so the `pub use gpuix_native::*` reference below drags in every
+# registration with it. Do not "optimise" this back to the default.
+[profile.dev.package.gpuix-native]
+codegen-units = 1
+
+[profile.release.package.gpuix-native]
+codegen-units = 1
+
+[profile.release]
+lto = "thin"
+codegen-units = 16
+debug = 1
+# napi catches panics at the JS boundary; abort would take the whole app down.
+panic = "unwind"

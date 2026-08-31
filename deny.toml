@@ -1,0 +1,110 @@
+# cargo-deny configuration. Enforced by the `deny` job in
+# .github/workflows/ci.yml and by `just check` locally.
+# Reference: docs/plan/06-testing-perf-ci.md §5.
+
+[graph]
+# Only the platforms we actually ship. Keeps Windows-only and wasm-only
+# transitive crates out of the license graph until Windows stops being deferred
+# (Q3, M6-10).
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+]
+all-features = true
+
+[output]
+feature-depth = 1
+
+# -----------------------------------------------------------------------------
+# Licenses
+# -----------------------------------------------------------------------------
+[licenses]
+# Permissive licenses only. superterminal itself is Apache-2.0 (Cargo.toml).
+# Verified 2026-08-31: gpuix is Apache-2.0, alacritty_terminal 0.26.0 is
+# Apache-2.0. GPUI is Apache-2.0 inside Zed's repo even though the surrounding
+# Zed workspace carries AGPL/GPL crates -- we link only `gpui` and its deps, and
+# `crates/st-native` is outside the cargo workspace, so those never enter this
+# graph. If a GPL/AGPL crate ever shows up here, that is a real finding, not a
+# false positive: investigate before adding an exception.
+allow = [
+    "Apache-2.0",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+
+    # --- OPEN QUESTION 8 (docs/plan/06-testing-perf-ci.md) ---------------
+    # MPL-2.0 is deliberately NOT allowed yet.
+    #
+    # §5 of the plan expects some GPUI font crates to pull MPL-2.0, but that is
+    # unverified: `crates/st-native` is excluded from the workspace, so the
+    # first `cargo deny check` run only sees the non-GPU graph and will not tell
+    # us either way. MPL-2.0 is file-level copyleft -- fine for a dependency we
+    # link unmodified, a licensing obligation the moment we vendor and patch one
+    # (which is exactly what we do to gpuix).
+    #
+    # Decision rule: leave this commented out until the first CI run on a graph
+    # that includes st-native. If MPL-2.0 crates appear, list them explicitly in
+    # [[licenses.exceptions]] below with the crate name rather than blanket
+    # allowing MPL-2.0 for everything.
+    # "MPL-2.0",
+]
+
+# Anything not in `allow` is denied. Copyleft licenses are called out here so a
+# reviewer sees the intent even though the deny is already implied.
+#   GPL-*, AGPL-*, SSPL-*: never acceptable, no exception process.
+# cargo-deny has no `deny` list in the v2 schema -- `allow` is exhaustive -- so
+# this is the record of the decision from §5.
+
+# Crates that fail the SPDX-expression check but are fine in practice. Each entry
+# needs a comment saying why. Empty for now; add a crate here rather than
+# widening `allow`.
+exceptions = []
+
+# Fail on any crate whose license cannot be determined with high confidence.
+confidence-threshold = 0.93
+unused-allowed-license = "warn"
+
+# -----------------------------------------------------------------------------
+# Bans
+# -----------------------------------------------------------------------------
+[bans]
+# Warn-only, deliberately. Duplicate versions are near-unavoidable in a graph
+# that pulls both alacritty_terminal and the tokio/tower ecosystem, and blocking
+# a PR on someone else's transitive `bitflags 1.x` is pure friction. The warning
+# is still worth having: it is the early signal for binary bloat and for the
+# "two incompatible copies of the same type" class of bug.
+multiple-versions = "warn"
+wildcards = "deny"
+# Local path/git deps legitimately use wildcards (vendor/gpuix); everything from
+# a registry must be pinned to a real version range.
+allow-wildcard-paths = true
+highlight = "all"
+
+deny = []
+skip = []
+skip-tree = []
+
+# -----------------------------------------------------------------------------
+# Advisories
+# -----------------------------------------------------------------------------
+[advisories]
+version = 2
+ignore = []
+# `unmaintained` findings are informational: an unmaintained crate is a planning
+# problem, not a reason to block today's PR.
+unmaintained = "workspace"
+
+# -----------------------------------------------------------------------------
+# Sources
+# -----------------------------------------------------------------------------
+# Not enforced by CI yet (the `deny` job runs `check licenses bans advisories`).
+# The vendored-submodule source policy is settled in M0-02.
+[sources]
+unknown-registry = "deny"
+unknown-git = "allow"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

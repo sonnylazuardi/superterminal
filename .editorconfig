@@ -1,0 +1,42 @@
+# https://editorconfig.org
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+
+[*.rs]
+indent_style = space
+indent_size = 4
+max_line_length = 100
+
+[*.{ts,tsx,js,jsx,mjs,cjs,json,jsonc,css}]
+indent_style = space
+indent_size = 2
+
+[*.{yml,yaml}]
+indent_style = space
+indent_size = 2
+
+[*.toml]
+indent_style = space
+indent_size = 4
+
+[*.md]
+# Markdown uses trailing double-space for hard line breaks.
+trim_trailing_whitespace = false
+
+[justfile]
+indent_style = space
+indent_size = 4
+
+[Makefile]
+indent_style = tab
+
+[*.{patch,diff}]
+trim_trailing_whitespace = false
+insert_final_newline = false

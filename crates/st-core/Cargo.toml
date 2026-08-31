@@ -1,0 +1,23 @@
+[package]
+name = "st-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+alacritty_terminal = "0.26"
+portable-pty = "0.9"
+st-proto = { version = "0.1.0", path = "../st-proto" }
+thiserror = "2.0.20"
+tracing = "0.1.44"
+vte = "0.15.0"
+
+[dev-dependencies]
+proptest = "1.11.0"
+
+[target."cfg(unix)".dependencies]
+libc = "0.2.189"

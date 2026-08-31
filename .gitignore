@@ -1,0 +1,13 @@
+target/
+node_modules/
+dist/
+*.node
+.env
+docs/perf/*.json
+!docs/perf/.gitkeep
+
+# Bun's lockfile IS committed: CI runs `bun install --frozen-lockfile`.
+# Local sysroot crutch used to build gpuix without root (see docs/DEV.md).
+/.sysroot/
+/vendor-sysroot/
+*.log
