@@ -41,7 +41,7 @@ jobs:
       RUST_BACKTRACE: 1
     steps:
       # The perf harness drives the real client, so the GPUI submodule is needed.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           submodules: recursive
 
@@ -76,7 +76,7 @@ jobs:
 
       - name: Upload perf JSON
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: perf-${{ github.run_id }}
           path: docs/perf/*.json
