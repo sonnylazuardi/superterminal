@@ -56,7 +56,7 @@ jobs:
             allow-fail: true
     steps:
       # No submodules: vendor/gpuix is only needed by the `native` job.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           submodules: false
 
@@ -93,7 +93,7 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           submodules: false
 
@@ -145,7 +145,7 @@ jobs:
       SCCACHE_GHA_ENABLED: "true"
     steps:
       # Submodules ARE needed here: vendor/gpuix is the GPUI checkout.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           submodules: recursive
 
@@ -168,10 +168,10 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install just
-        uses: extractions/setup-just@v2
+        uses: extractions/setup-just@v4
 
       - name: Install sccache
-        uses: mozilla-actions/sccache-action@v0.0.9
+        uses: mozilla-actions/sccache-action@v0.0.11
 
       # The Zed commit that gpuix path-depends on is recorded in docs/PINS.md
       # (M0-02). Keying the cache on that file plus the submodule pin in
@@ -202,7 +202,7 @@ jobs:
         run: sccache --show-stats
 
       - name: Upload .node artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: st-native-${{ matrix.os }}
           path: |
@@ -219,7 +219,7 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           submodules: false
       # `sources` is deliberately not checked yet: the vendored gpuix submodule
