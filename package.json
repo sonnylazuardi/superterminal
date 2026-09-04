@@ -9,7 +9,7 @@
     "typecheck": "tsc --noEmit -p packages/app/tsconfig.json"
   },
   "devDependencies": {
-    "typescript": "^5.7.0",
+    "typescript": "^7.0.2",
     "@types/react": "^19.0.0",
     "@types/bun": "^1.4.0"
   }
