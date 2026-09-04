@@ -11,8 +11,12 @@
  *
  * The native module is located by `native/preload.ts`, which `bunfig.toml`
  * preloads — ESM imports hoist, so setting the env var here would be too late.
+ * The static import below is the same guarantee for `bun build --compile`
+ * binaries, which do not read bunfig preloads: it evaluates before
+ * `@gpuix/react` (first import) pulls in `@gpuix/native`.
  */
 
+import './native/preload.js';
 import { render, type Root } from '@gpuix/react';
 import { bootstrap, connect } from './bootstrap.js';
 import { parseArgv, USAGE } from './cli/argv.js';

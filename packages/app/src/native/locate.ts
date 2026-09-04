@@ -136,9 +136,10 @@ export function candidatePaths(env: LocateEnv): string[] {
   out.push(...env.listNodeFiles(join(root, 'crates', 'st-native', 'target', 'debug')));
   if (isCompiled(env)) {
     // `bun build --compile --asset packages/native/...` keeps the relative path
-    // under the virtual /$bunfs/root tree (05 §10).
+    // under the virtual /$bunfs/root tree (05 §10). Forward slashes always:
+    // `path.join` would emit backslashes on Windows and never match.
     const bunfs = '/$bunfs/root/packages/native';
-    out.push(join(bunfs, `superterminal-native.${triple}.node`));
+    out.push(`${bunfs}/superterminal-native.${triple}.node`);
     out.push(...env.listNodeFiles(bunfs));
     // Beside a compiled binary (dist/ layout).
     out.push(join(dirname(env.execPath), `superterminal-native.${triple}.node`));

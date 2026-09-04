@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Superterminal for Windows (per-user install, no admin required).
+  Ships the bun compile single-file client; the daemon and every
+  PTY stay in WSL, reached over loopback TCP (see docs/WINDOWS.md).
+
+  Build (plain cmd.exe works). The exe must be flipped to the GUI
+  subsystem first or Windows parks a console next to every window:
+    editbin.exe /SUBSYSTEM:WINDOWS superterminal.exe
+    candle.exe Product.wxs -o obj\
+    light.exe obj\Product.wixobj -o Superterminal-0.1.1.msi
+-->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product Id="*"
+           Name="Superterminal"
+           Language="1033"
+           Version="0.1.1"
+           Manufacturer="Superterminal"
+           UpgradeCode="41205641-1b34-4af0-9aa1-d9bfddb883b1">
+    <Package InstallerVersion="500"
+             Compressed="yes"
+             InstallScope="perUser"
+             InstallPrivileges="limited"
+             Description="GPU terminal client with a persistent WSL backend" />
+    <MajorUpgrade DowngradeErrorMessage="A newer Superterminal is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="LocalAppDataFolder">
+        <Directory Id="INSTALLFOLDER" Name="Superterminal">
+          <Component Id="MainExecutable" Guid="358cdd2f-9b8d-4154-b6bc-904074d8ed00">
+            <!--
+              Side-by-side native module, found via the "beside a compiled
+              binary" probe in packages/app/src/native/locate.ts. Deliberately
+              not embedded with the asset flag: on Bun 1.4.0-canary a compile
+              that embeds the .node produces an exe whose entry never
+              evaluates, and the bunfs virtual path needs forward slashes.
+            -->
+            <File Id="SuperterminalExe" Source="superterminal.exe" />
+            <File Id="SuperterminalNative"
+                  Source="superterminal-native.win32-x64-msvc.node" />
+            <!-- The WSL daemon listens here (superterminald tcp flag). Users
+                 with a different setup can override it after install. -->
+            <Environment Id="TcpTarget"
+                         Name="SUPERTERMINAL_TCP"
+                         Value="127.0.0.1:7171"
+                         Permanent="no"
+                         Action="set"
+                         Part="all" />
+            <!-- Per-user components need an HKCU KeyPath (ICE38) and a
+                 RemoveFolder for the profile dir (ICE64). -->
+            <RemoveFolder Id="RemoveInstallDir" Directory="INSTALLFOLDER" On="uninstall" />
+            <RegistryValue Root="HKCU"
+                           Key="Software\Superterminal"
+                           Name="installed"
+                           Type="integer"
+                           Value="1"
+                           KeyPath="yes" />
+          </Component>
+        </Directory>
+      </Directory>
+      <Directory Id="ProgramMenuFolder">
+        <Directory Id="ApplicationProgramsFolder" Name="Superterminal">
+          <Component Id="StartMenuShortcut" Guid="b02f6091-03af-43b5-a93a-db147cfcbfe7">
+            <Shortcut Id="AppShortcut"
+                      Name="Superterminal"
+                      Target="[INSTALLFOLDER]superterminal.exe"
+                      WorkingDirectory="INSTALLFOLDER" />
+            <RemoveFolder Id="RemoveAppPrograms" On="uninstall" />
+            <RegistryValue Root="HKCU"
+                           Key="Software\Superterminal"
+                           Name="shortcut"
+                           Type="integer"
+                           Value="1"
+                           KeyPath="yes" />
+          </Component>
+        </Directory>
+      </Directory>
+    </Directory>
+
+    <Feature Id="ProductFeature" Title="Superterminal" Level="1">
+      <ComponentRef Id="MainExecutable" />
+      <ComponentRef Id="StartMenuShortcut" />
+    </Feature>
+  </Product>
+</Wix>

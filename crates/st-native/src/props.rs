@@ -53,9 +53,21 @@ pub const SUPPORTED_EVENTS: &[&str] = &[
     "blur",
 ];
 
-/// Default monospace stack. `.SystemUIFont` is gpui's own alias and is *not*
-/// monospace, so we never fall back to it.
-pub const DEFAULT_FONT_FAMILY: &str = "monospace";
+/// Default monospace face, per platform. `"monospace"` is a fontconfig alias,
+/// so it resolves on Linux — but neither CoreText nor DirectWrite resolves it,
+/// and both silently fall back to the proportional UI font. On a proportional
+/// face the advance of `'m'` is ~0.9em instead of ~0.6em, so every cell comes
+/// out ~1.5x too wide with uniform gaps between glyphs. `.SystemUIFont` is
+/// gpui's own alias and is *not* monospace, so we never fall back to it.
+pub const DEFAULT_FONT_FAMILY: &str = if cfg!(target_os = "macos") {
+    "Menlo"
+} else if cfg!(target_os = "windows") {
+    // Guaranteed since Vista. ("Cascadia Mono" is nicer but only ships with
+    // Windows Terminal / Win11.)
+    "Consolas"
+} else {
+    "monospace"
+};
 /// 04 §6: `line_h = font_px * line_height`.
 pub const DEFAULT_LINE_HEIGHT: f32 = 1.2;
 /// Matches the default in `packages/app`'s config schema.
