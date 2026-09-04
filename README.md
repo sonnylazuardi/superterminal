@@ -1,6 +1,6 @@
 # superterminal
 
-A GPU‑rendered, persistent client/server terminal. Rust server (`superterminald`) owns the terminals; a Bun 1.4.0 + React client renders them through [gpuix](https://github.com/remorses/gpuix) (React bindings for Zed's GPUI) with a native Rust `<terminal-grid>` element.
+A GPU‑rendered, native multiplexer terminal for Windows, Linux and Mac. Rust server (`superterminald`) owns the terminals; a Bun 1.4.0 + React client renders them through [gpuix](https://github.com/remorses/gpuix) (React bindings for Zed's GPUI) with a native Rust `<terminal-grid>` element.
 
 **Status: planning only — no implementation yet.** Start with [`HANDOVER.md`](./HANDOVER.md).
 
