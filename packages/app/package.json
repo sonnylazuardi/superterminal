@@ -10,7 +10,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "@gpuix/react": "^0.6.0",
+    "@gpuix/react": "^0.7.0",
     "@superterminal/protocol-ts": "workspace:*",
     "react": "^19.2.8",
     "zod": "^4.5.4"

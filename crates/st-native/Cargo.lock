@@ -2522,9 +2522,10 @@ dependencies = [
 
 [[package]]
 name = "gpuix-native"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "anyhow",
+ "base64",
  "core-graphics 0.24.0",
  "core-text",
  "csscolorparser",
@@ -2550,6 +2551,7 @@ dependencies = [
  "wasm-bindgen",
  "web-sys",
  "web-time",
+ "windows 0.61.3",
 ]
 
 [[package]]

@@ -70,10 +70,10 @@ index b3811c1..bb6a111 100644
      }
  
 diff --git a/packages/native/src/lib.rs b/packages/native/src/lib.rs
-index bfb9dda..c7391a3 100644
+index a69f0b9..c84d4e7 100644
 --- a/packages/native/src/lib.rs
 +++ b/packages/native/src/lib.rs
-@@ -2,9 +2,9 @@
+@@ -13,9 +13,9 @@ use napi_derive::napi;
  
  #[cfg(target_os = "macos")]
  mod app_menu;
@@ -85,21 +85,24 @@ index bfb9dda..c7391a3 100644
  mod diff;
  mod element_tree;
  mod markdown;
-@@ -27,3 +27,9 @@ mod test_renderer;
- pub use element_tree::*;
+@@ -39,6 +39,12 @@ pub use element_tree::*;
  pub use renderer::*;
  pub use style::*;
-+
+ 
 +// superterminal: names an embedding cdylib needs in order to define and
 +// register its own custom elements. See `custom_elements`.
 +pub use custom_elements::{
 +    register_global_factory, CustomElement, CustomElementFactory, CustomRenderContext,
 +};
++
+ #[cfg(any(
+     test,
+     not(all(
 diff --git a/packages/native/src/renderer.rs b/packages/native/src/renderer.rs
-index 9620967..7c3fb47 100644
+index d66ab63..f72442a 100644
 --- a/packages/native/src/renderer.rs
 +++ b/packages/native/src/renderer.rs
-@@ -2628,7 +2628,7 @@ impl Drop for GpuixRenderer {
+@@ -2802,7 +2802,7 @@ impl Drop for GpuixRenderer {
  
  // ── GPUI View ────────────────────────────────────────────────────────
  
@@ -108,7 +111,7 @@ index 9620967..7c3fb47 100644
      pub(crate) tree: Arc<Mutex<RetainedTree>>,
      pub(crate) event_callback: Option<EventCallback>,
      pub(crate) window_title: String,
-@@ -4395,7 +4395,7 @@ pub(crate) fn apply_height<E: gpui::Styled>(el: E, dim: &crate::style::Dimension
+@@ -4641,7 +4641,7 @@ pub(crate) fn apply_height<E: gpui::Styled>(el: E, dim: &crate::style::Dimension
  /// element that only applied the base styles accepted the prop, serialized it,
  /// and dropped it. gpui reads both refinements from the element state behind the
  /// element's `ElementId`, so the caller must have called `.id(..)` first.

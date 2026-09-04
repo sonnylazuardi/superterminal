@@ -17,21 +17,21 @@ See `docs/DEV.md` for how to perform a bump and how to build.
 | Field | Value |
 |---|---|
 | Repo | `https://github.com/remorses/gpuix` |
-| Release | **0.6.0** |
-| Tag | `@gpuix/native@0.6.0` (identical commit as `@gpuix/react@0.6.0`) |
-| Commit | `dfb83f3e096b0d3130e7b63660d9b6810cb5855c` |
-| Commit date | 2026-08-29 |
+| Release | **0.7.0** |
+| Tag | `@gpuix/native@0.7.0` (identical commit as `@gpuix/react@0.7.0`) |
+| Commit | `a24b4a42eb516c7b940eb8d34ecebb077df623bd` |
+| Commit date | 2026-09-01 |
 | Submodule path | `vendor/gpuix` (detached HEAD at the tag) |
-| Rust crate | `gpuix-native` 0.6.0 at `packages/native`, `crate-type = ["cdylib", "rlib"]` |
-| npm packages | `@gpuix/native` 0.6.0, `@gpuix/react` 0.6.0 |
+| Rust crate | `gpuix-native` 0.7.0 at `packages/native`, `crate-type = ["cdylib", "rlib"]` |
+| npm packages | `@gpuix/native` 0.7.0, `@gpuix/react` 0.7.0 |
 
-The repository publishes **no plain `v0.6.0` tag** — the release is tagged per
-npm package (`@gpuix/native@0.6.0` / `@gpuix/react@0.6.0`), both pointing at the
+The repository publishes **no plain `v0.7.0` tag** — the release is tagged per
+npm package (`@gpuix/native@0.7.0` / `@gpuix/react@0.7.0`), both pointing at the
 same commit. Use the `@gpuix/native@` form when re-pinning.
 
 ```
-git -C vendor/gpuix fetch --depth 1 origin tag '@gpuix/native@0.6.0'
-git -C vendor/gpuix checkout --detach 'refs/tags/@gpuix/native@0.6.0'
+git -C vendor/gpuix fetch --depth 1 origin tag '@gpuix/native@0.7.0'
+git -C vendor/gpuix checkout --detach 'refs/tags/@gpuix/native@0.7.0'
 ```
 
 ## 2. Zed / GPUI (`vendor/gpuix/zed`)
@@ -48,7 +48,7 @@ gpui_macos    = { path = "../../zed/crates/gpui_macos" }   # macOS only
 |---|---|
 | Repo | `https://github.com/remorses/zed.git` (a **fork**, not `zed-industries/zed`) |
 | Branch tracked upstream by gpuix | `gpuix` |
-| Commit pinned by gpuix 0.6.0 | `8b94defe56992b3ca4ffd4853ace741d8168111a` |
+| Commit pinned by gpuix 0.7.0 (unchanged from 0.6.0) | `8b94defe56992b3ca4ffd4853ace741d8168111a` |
 | Commit date | 2026-08-27 |
 | Commit subject | `gpui: resolve a negative offset_in_item in ListState::scroll_to at layout` |
 | `gpui` crate version | 0.2.2 |
@@ -104,7 +104,7 @@ first (see `docs/DEV.md` §2).
 
 | File | Lines | What | Upstream |
 |---|---|---|---|
-| `patches/0001-factory-hook.patch` | 40 insertions | `register_global_factory` + the four visibility changes an out-of-tree `CustomElement` needs. Design: `docs/plan/04-client-native.md` §1.2 option (b). | PR **not yet opened** — record the URL here (M0-06 tail). |
+| `patches/0001-factory-hook.patch` | 33 insertions | `register_global_factory` + the four visibility changes an out-of-tree `CustomElement` needs. Design: `docs/plan/04-client-native.md` §1.2 option (b). | PR **not yet opened** — record the URL here (M0-06 tail). |
 | `patches/0002-linux-simulate-mouse-double-lease.patch` | 7 insertions | Bug fix: `simulateClick`/`simulateMouse*` panic the GPUI thread on Linux with a double lease of `GpuixView`. | Issue/PR **not yet opened**. Drop the patch when it lands. |
 
 0001 does four things beyond adding the hook, each forced by a real compile or
@@ -165,8 +165,8 @@ person with root on a normal box should re-measure and replace this table.
 
 | ID | What | Result |
 |---|---|---|
-| V1 | gpuix counter under Bun 1.4.0, `ThreadsafeFunction` re-entry | **PASS** on wsl2-3060. 50 `simulateClick`s through GPUI's input pipeline take the counter 0 → 50 in 1.54 s, no panic, no hang. Requires patch 0002. |
-| M0-08 | `<hello-box>` from `crates/st-native` | **PASS** on wsl2-3060. Factory created, `color` and `label` props reach `set_prop`, element lays out at 96×47 px and re-shapes to 163 px wide when `label` changes; survives 20 colour changes. |
+| V1 | gpuix counter under Bun 1.4.0, `ThreadsafeFunction` re-entry | **PASS** on wsl2-3060, re-verified on gpuix 0.7.0 (2026-09-04). 50 `simulateClick`s through GPUI's input pipeline take the counter 0 → 50 in 1.27 s, no panic, no hang. Requires patch 0002. |
+| M0-08 | `<hello-box>` from `crates/st-native` | **PASS** on wsl2-3060, re-verified on gpuix 0.7.0 (2026-09-04). Factory created, `color` and `label` props reach `set_prop`, element lays out at 96×47 px and re-shapes to 163 px wide when `label` changes; survives 20 colour changes. |
 | — | `.node` loads under Bun | **PASS**. `require()` on `libst_native.so` renamed `.node` exports `GpuixRenderer`, identical to stock `gpuix-native`; the `codegen-units = 1` pin on the `gpuix-native` package keeps the rlib's napi `.init_array` registrations alive. |
 | — | Window opens under WSLg | **PASS**, Wayland backend, client-side decorations. |
 | — | Release build | **PASS**. `cargo build --release` produces a 249 MB `.node` that loads under Bun and passes the `<hello-box>` check with the same geometry as the debug build. |

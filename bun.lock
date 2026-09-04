@@ -14,7 +14,7 @@
       "name": "@superterminal/app",
       "version": "0.1.0",
       "dependencies": {
-        "@gpuix/react": "^0.6.0",
+        "@gpuix/react": "^0.7.0",
         "@superterminal/protocol-ts": "workspace:*",
         "react": "^19.2.8",
         "zod": "^4.5.4",
@@ -29,15 +29,15 @@
     },
   },
   "packages": {
-    "@gpuix/native": ["@gpuix/native@0.6.0", "", { "optionalDependencies": { "@gpuix/native-darwin-arm64": "0.6.0", "@gpuix/native-linux-x64-gnu": "0.6.0", "@gpuix/native-win32-x64-msvc": "0.6.0" } }, "sha512-tpbA+csf12kTzK/vNyAtNAEdJG5GDdBNjDQAfaAkal9m6oCkNGsbeUDhWYsh14Rwa2oRxYoMZ+NQHHXU1EoSyQ=="],
+    "@gpuix/native": ["@gpuix/native@0.7.0", "", { "optionalDependencies": { "@gpuix/native-darwin-arm64": "0.7.0", "@gpuix/native-linux-x64-gnu": "0.7.0", "@gpuix/native-win32-x64-msvc": "0.7.0" } }, "sha512-nyYTs+edJ4aztXltcwkRzbmFwVEHcP0r4OmnHfvufbM/m+vOISkAZOMGw7F8QmDd0x/PPHUTCTVi76U5VBal8Q=="],
 
-    "@gpuix/native-darwin-arm64": ["@gpuix/native-darwin-arm64@0.6.0", "", { "os": "darwin", "cpu": "arm64" }, "sha512-Aarqk7h5Vz/1JYuEC1uSXA8QvT+yeUPsNrs6INXt0yH6c01FF7L+x6+37zh1rwVeQFADAyZ2Btzqbdqfd+YsaA=="],
+    "@gpuix/native-darwin-arm64": ["@gpuix/native-darwin-arm64@0.7.0", "", { "os": "darwin", "cpu": "arm64" }, "sha512-ZnAdAqoL60tZH+u4sJKWSY4Cx9cfsFxtqkgMoD39FdMSAgtXhg5b6qHaSltBrc7VMs5z8cVxxI9fK9KR+LjTNg=="],
 
-    "@gpuix/native-linux-x64-gnu": ["@gpuix/native-linux-x64-gnu@0.6.0", "", { "os": "linux", "cpu": "x64" }, "sha512-ttcc3K+EBjfS+NW0K8yYJ/hFFfmZox8ulp6o11BGbaUykOuvEgFMxdDrJmohDeYCBwj3Hd2gIKA1Zk14ctVs/Q=="],
+    "@gpuix/native-linux-x64-gnu": ["@gpuix/native-linux-x64-gnu@0.7.0", "", { "os": "linux", "cpu": "x64" }, "sha512-jch73oOMDX5kr+Qe6SjFQ7jroCnjgo42cYEVQ8UonWLOVxRIhXo0InJEgLk70HJ9bgNkKXwBSoqBTXBpG/Xgng=="],
 
-    "@gpuix/native-win32-x64-msvc": ["@gpuix/native-win32-x64-msvc@0.6.0", "", { "os": "win32", "cpu": "x64" }, "sha512-/b76q0dAmy3HPZTQI0G4lbbSjqDTKDaN/bVmI75UJP06Kh+soMoizCC1E8vLlNRI6Q77+ClKWUvu/j0SdbDRVQ=="],
+    "@gpuix/native-win32-x64-msvc": ["@gpuix/native-win32-x64-msvc@0.7.0", "", { "os": "win32", "cpu": "x64" }, "sha512-NTJPEmyU2Cxn+nejY7H8f7htZS3WVz79ek+R7gnAlFtASKvPaUtUYCKHrhAb1HToxqVm7cvaKf3ZxjY3ej4BCw=="],
 
-    "@gpuix/react": ["@gpuix/react@0.6.0", "", { "dependencies": { "@gpuix/native": "^0.6.0", "eventsource-parser": "^4.1.0", "react-reconciler": "^0.31.0", "zod": "^4.4.3" }, "peerDependencies": { "react": "^18.0.0 || ^19.0.0" } }, "sha512-b0XS5aSC0L8jcv2KYD3RKUIWZnNOeSU2X6vvkflZizNnbN+AuaObK+FfS8AZzo1G+NITgY7IzIojXRs+oxQABQ=="],
+    "@gpuix/react": ["@gpuix/react@0.7.0", "", { "dependencies": { "@gpuix/native": "^0.7.0", "eventsource-parser": "^4.1.0", "react-reconciler": "^0.31.0", "zod": "^4.4.3" }, "peerDependencies": { "react": "^18.0.0 || ^19.0.0" } }, "sha512-L8lL/OmFkL0DI9Cip13kbdnOo2tNTvboHu01O4Qyph/LAb8og0BSs3QAzeG1vUBddZNFysAQlbhjWPBNCOke+g=="],
 
     "@superterminal/app": ["@superterminal/app@workspace:packages/app"],
 
