@@ -158,8 +158,21 @@ pub fn open(path: &str, build_id: &str) -> Result<Arc<SharedDataPlane>, String> 
         build_id: build_id.to_string(),
         ..DataPlaneOptions::default()
     };
-    let connection = DataPlaneConnection::connect(path, options, wake)
-        .map_err(|error| format!("{path}: {error}"))?;
+    let connection = if let Some(addr) = parse_tcp_target(path) {
+        DataPlaneConnection::connect_tcp(addr, options, wake)
+    } else {
+        #[cfg(unix)]
+        {
+            DataPlaneConnection::connect(path, options, wake)
+        }
+        #[cfg(not(unix))]
+        {
+            return Err(format!(
+                "{path}: unix sockets are not supported on this platform; use tcp://host:port"
+            ));
+        }
+    }
+    .map_err(|error| format!("{path}: {error}"))?;
 
     let shared = Arc::new(SharedDataPlane {
         path: path.to_string(),
@@ -169,6 +182,11 @@ pub fn open(path: &str, build_id: &str) -> Result<Arc<SharedDataPlane>, String> 
     });
     pool.insert(path.to_string(), Arc::downgrade(&shared));
     Ok(shared)
+}
+
+/// Parses a `tcp://host:port` data-plane target. `None` means a socket path.
+fn parse_tcp_target(path: &str) -> Option<std::net::SocketAddr> {
+    path.strip_prefix("tcp://")?.parse().ok()
 }
 
 /// Keeps a connection alive with no element mounted on it (`stConnectDataPlane`).

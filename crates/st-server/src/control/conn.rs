@@ -15,12 +15,11 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::control::Conn;
 use st_proto::control::{Handshake, Revision};
 use st_proto::frame::{HelloAck, Reject, RejectReason, HANDSHAKE_TIMEOUT_SECS};
 use st_proto::{ClientKind, MAX_CONTROL_LINE, PROTO_VERSION};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
-use tokio::net::UnixStream;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, ReadHalf, WriteHalf};
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::{broadcast, mpsc, oneshot};
 
@@ -37,7 +36,7 @@ const OUTBOUND_CAPACITY: usize = 256;
 /// `first_byte` is the `{` the sniffer consumed; it is put back in front of
 /// the stream so the first line parses.
 pub async fn serve_control(
-    stream: UnixStream,
+    stream: Conn,
     ctx: Arc<ServerContext>,
     client: ClientId,
     first_byte: u8,
@@ -53,12 +52,12 @@ pub async fn serve_control(
 }
 
 async fn run(
-    stream: UnixStream,
+    stream: Conn,
     ctx: &Arc<ServerContext>,
     client: ClientId,
     first_byte: u8,
 ) -> std::io::Result<()> {
-    let (read_half, write_half) = stream.into_split();
+    let (read_half, write_half) = tokio::io::split(stream);
     let mut reader = LineReader::new(read_half, &[first_byte]);
 
     let (out_tx, out_rx) = mpsc::channel::<String>(OUTBOUND_CAPACITY);
@@ -266,7 +265,7 @@ async fn send_json<T: serde::Serialize>(out: &mpsc::Sender<String>, value: &T) -
 
 /// Owns the write half so nothing else can interleave a partial line.
 async fn write_lines(
-    mut write_half: OwnedWriteHalf,
+    mut write_half: WriteHalf<Conn>,
     mut rx: mpsc::Receiver<String>,
     ctx: Arc<ServerContext>,
 ) {
@@ -341,13 +340,13 @@ enum LineError {
 /// `tokio`'s `read_until` has no cap, and a 4 MiB limit that is only checked
 /// after the allocation is not a limit, so the loop is written by hand.
 struct LineReader {
-    inner: BufReader<OwnedReadHalf>,
+    inner: BufReader<ReadHalf<Conn>>,
     buf: Vec<u8>,
     prefix: Vec<u8>,
 }
 
 impl LineReader {
-    fn new(read_half: OwnedReadHalf, prefix: &[u8]) -> Self {
+    fn new(read_half: ReadHalf<Conn>, prefix: &[u8]) -> Self {
         Self {
             inner: BufReader::new(read_half),
             buf: Vec::with_capacity(1024),
@@ -407,6 +406,7 @@ impl LineReader {
 mod tests {
     use super::*;
     use tokio::io::AsyncWriteExt;
+    use tokio::net::UnixStream;
 
     async fn reader_over(bytes: &[u8], prefix: &[u8]) -> LineReader {
         let (mut client, server) = UnixStream::pair().unwrap();
@@ -417,7 +417,7 @@ mod tests {
             let _ = client.write_all(&bytes).await;
             let _ = client.shutdown().await;
         });
-        LineReader::new(server.into_split().0, prefix)
+        LineReader::new(tokio::io::split(Conn::from(server)).0, prefix)
     }
 
     #[tokio::test]

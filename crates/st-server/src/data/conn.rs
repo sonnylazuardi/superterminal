@@ -17,6 +17,7 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use crate::control::Conn;
 use st_core::publisher::ClientId as CoreClientId;
 use st_core::surface::SurfaceStatus;
 use st_proto::data::SetViewState;
@@ -27,8 +28,7 @@ use st_proto::{
     MAX_INPUT_BYTES, PROTO_VERSION,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
-use tokio::net::UnixStream;
+use tokio::io::{ReadHalf, WriteHalf};
 use tokio::sync::{mpsc, Notify};
 
 use crate::supervisor::{SurfaceSupervisor, Upcall};
@@ -97,7 +97,7 @@ impl DataCtx {
 /// This is the shape [`crate::control::DataAcceptor`] promises. Errors are
 /// logged rather than propagated: a broken client must never take the daemon
 /// down.
-pub async fn accept(stream: UnixStream, ctx: DataCtx, client: ClientId) {
+pub async fn accept(stream: Conn, ctx: DataCtx, client: ClientId) {
     serve_connection(stream, Vec::new(), ctx, client).await;
 }
 
@@ -105,20 +105,20 @@ pub async fn accept(stream: UnixStream, ctx: DataCtx, client: ClientId) {
 ///
 /// Only the tests and standalone tooling need this; the daemon's accept loop
 /// consumes the magic while sniffing the plane.
-pub async fn accept_with_magic(stream: UnixStream, ctx: DataCtx, client: ClientId) {
+pub async fn accept_with_magic(stream: Conn, ctx: DataCtx, client: ClientId) {
     serve_connection_expecting_magic(stream, ctx, client).await;
 }
 
-async fn serve_connection_expecting_magic(stream: UnixStream, ctx: DataCtx, client: ClientId) {
+async fn serve_connection_expecting_magic(stream: Conn, ctx: DataCtx, client: ClientId) {
     serve_inner(stream, ctx, client, true, Vec::new()).await;
 }
 
-async fn serve_connection(stream: UnixStream, prefix: Vec<u8>, ctx: DataCtx, client: ClientId) {
+async fn serve_connection(stream: Conn, prefix: Vec<u8>, ctx: DataCtx, client: ClientId) {
     serve_inner(stream, ctx, client, false, prefix).await;
 }
 
 async fn serve_inner(
-    stream: UnixStream,
+    stream: Conn,
     ctx: DataCtx,
     client: ClientId,
     expect_magic: bool,
@@ -127,7 +127,7 @@ async fn serve_inner(
     ctx.supervisor.ensure_pump();
     let core_client = CoreClientId::new(client.0);
 
-    let (reader, writer) = stream.into_split();
+    let (reader, writer) = tokio::io::split(stream);
     let (out_tx, out_rx) = mpsc::channel::<Vec<u8>>(ctx.supervisor.config().outbound_capacity);
     let shutdown = Arc::new(Notify::new());
     ctx.supervisor
@@ -172,7 +172,7 @@ enum ConnError {
 }
 
 async fn serve(
-    mut reader: OwnedReadHalf,
+    mut reader: ReadHalf<Conn>,
     mut decoder: FrameDecoder,
     ctx: &DataCtx,
     client: CoreClientId,
@@ -542,7 +542,7 @@ enum Incoming {
 }
 
 async fn next_incoming(
-    reader: &mut OwnedReadHalf,
+    reader: &mut ReadHalf<Conn>,
     decoder: &mut FrameDecoder,
     buf: &mut [u8],
 ) -> Result<Incoming, ConnError> {
@@ -563,7 +563,7 @@ async fn next_incoming(
 
 /// Drains the outbound channel to the socket. Ends when the connection is
 /// unregistered, which drops the sender.
-async fn pump_socket(mut writer: OwnedWriteHalf, mut rx: mpsc::Receiver<Vec<u8>>) {
+async fn pump_socket(mut writer: WriteHalf<Conn>, mut rx: mpsc::Receiver<Vec<u8>>) {
     while let Some(frame) = rx.recv().await {
         if writer.write_all(&frame).await.is_err() {
             break;

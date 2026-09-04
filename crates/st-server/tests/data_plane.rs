@@ -71,7 +71,7 @@ impl Harness {
                 let ctx = DataCtx::new(Arc::clone(&accept_supervisor))
                     .with_build_id("test")
                     .with_workspace_revision(7);
-                tokio::spawn(accept_with_magic(stream, ctx, ClientId(next)));
+                tokio::spawn(accept_with_magic(stream.into(), ctx, ClientId(next)));
             }
         });
 

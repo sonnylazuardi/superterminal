@@ -89,7 +89,7 @@ pub fn run(connector: &dyn Connector, json: bool, out: &mut dyn Write) -> Result
     let workspace: WorkspaceSnapshot = client.request(|id| Req::WorkspaceGet { id })?;
 
     let report = StatusReport {
-        socket: connector.describe().display().to_string(),
+        socket: connector.describe(),
         metrics: Metrics::from_status_value(&raw),
         raw,
         sessions: workspace.workspace.sessions.len(),

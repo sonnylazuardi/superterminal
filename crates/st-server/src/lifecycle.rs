@@ -288,6 +288,10 @@ pub fn init_logging(paths: &Paths, foreground: bool, verbosity: u8) -> LogGuard 
 pub struct Options {
     /// `--socket <path>`: also moves the lock file beside it (§2).
     pub socket: Option<PathBuf>,
+    /// `--tcp <addr>`: also listen on loopback TCP for the Windows client
+    /// (the WSL side of the Windows/WSL split). Must be loopback; anything
+    /// else is refused at start-up because TCP peers carry no uid credential.
+    pub tcp: Option<std::net::SocketAddr>,
     /// `--config <path>`.
     pub config: Option<PathBuf>,
     /// `--state-dir <path>`.
@@ -341,6 +345,7 @@ pub struct ServerBuilder {
     check_peer_uid: bool,
     idle_exit: Option<Duration>,
     persist_debounce: Duration,
+    tcp: Option<std::net::SocketAddr>,
 }
 
 impl ServerBuilder {
@@ -358,6 +363,7 @@ impl ServerBuilder {
             check_peer_uid: true,
             idle_exit,
             persist_debounce: persist::DEBOUNCE,
+            tcp: None,
         }
     }
 
@@ -393,6 +399,14 @@ impl ServerBuilder {
     #[must_use]
     pub fn idle_exit(mut self, idle: Option<Duration>) -> Self {
         self.idle_exit = idle;
+        self
+    }
+
+    /// Also listens on loopback TCP (`--tcp`). Only for the Windows/WSL
+    /// split: the Windows client has no Unix socket to dial.
+    #[must_use]
+    pub fn tcp(mut self, addr: Option<std::net::SocketAddr>) -> Self {
+        self.tcp = addr;
         self
     }
 
@@ -462,12 +476,38 @@ impl ServerBuilder {
         let ctx = Arc::new(ctx);
 
         let accept = tokio::spawn(control::accept_loop(listener, Arc::clone(&ctx)));
+
+        let tcp_listener = match self.tcp {
+            Some(addr) if addr.ip().is_loopback() => {
+                let listener = tokio::net::TcpListener::bind(addr)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("cannot bind TCP {addr}: {e}"))?;
+                Some(listener)
+            }
+            Some(addr) => {
+                return Err(anyhow::anyhow!(
+                    "refusing to bind TCP {addr}: only loopback addresses are allowed,                      TCP peers carry no uid credential"
+                ));
+            }
+            None => None,
+        };
+        let tcp_listener_addr = tcp_listener
+            .as_ref()
+            .and_then(|listener| listener.local_addr().map(|a| a.to_string()).ok());
+        let accept_tcp = tcp_listener
+            .map(|listener| tokio::spawn(control::accept_loop_tcp(listener, Arc::clone(&ctx))));
+
         let idle = self
             .idle_exit
             .map(|period| tokio::spawn(idle_timer(Arc::clone(&ctx), period)));
 
+        let tcp_bound = accept_tcp
+            .as_ref()
+            .and(tcp_listener_addr.as_deref())
+            .unwrap_or("");
         tracing::info!(
             socket = %socket_path.display(),
+            tcp = tcp_bound,
             workspace = %workspace_file.display(),
             pid = std::process::id(),
             "superterminald ready"
@@ -480,6 +520,7 @@ impl ServerBuilder {
             workspace_file,
             lock,
             accept,
+            accept_tcp,
             idle,
         })
     }
@@ -630,6 +671,7 @@ pub struct RunningServer {
     workspace_file: PathBuf,
     lock: LockFile,
     accept: JoinHandle<()>,
+    accept_tcp: Option<JoinHandle<()>>,
     idle: Option<JoinHandle<()>>,
 }
 
@@ -699,6 +741,9 @@ impl RunningServer {
     async fn finish(self, reason: String) -> anyhow::Result<()> {
         // 1. stop accepting.
         self.accept.abort();
+        if let Some(accept_tcp) = self.accept_tcp {
+            accept_tcp.abort();
+        }
         if let Some(idle) = self.idle {
             idle.abort();
         }
@@ -798,7 +843,8 @@ pub async fn run(options: Options) -> anyhow::Result<()> {
 
     let mut builder = ServerBuilder::new(paths.clone(), loaded.config)
         .spawner(Arc::clone(&supervisor) as Arc<dyn SurfaceSpawner>)
-        .data_acceptor(crate::data::acceptor(Arc::clone(&supervisor)));
+        .data_acceptor(crate::data::acceptor(Arc::clone(&supervisor)))
+        .tcp(options.tcp);
     if options.no_idle_exit {
         builder = builder.idle_exit(None);
     }

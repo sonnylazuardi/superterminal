@@ -1,7 +1,9 @@
 /**
  * Control-plane client (05 §2).
  *
- * One `Bun.connect({ unix })` socket speaking newline-delimited JSON (Q14).
+ * One socket speaking newline-delimited JSON (Q14): `Bun.connect({ unix })`
+ * at home, `Bun.connect({ hostname, port })` for a `tcp://` target across the
+ * Windows/WSL boundary.
  * Transport only: framing, request/response correlation, timeouts, event
  * dispatch and reconnection. It knows nothing about tabs — the store is the
  * only listener in production.
@@ -27,6 +29,7 @@ import {
   VersionMismatchError,
 } from './errors.js';
 import { NdjsonDecoder, encodeFrame } from './framing.js';
+import { parseTcpTarget } from '../server/paths.js';
 
 const log = debug('st:control');
 
@@ -48,28 +51,31 @@ export type ConnectFn = (path: string, handlers: TransportHandlers) => Promise<C
 /** The real transport. Injectable so tests can drive framing without I/O. */
 export const bunConnect: ConnectFn = async (path, handlers) => {
   let closed = false;
-  const socket = await Bun.connect({
-    unix: path,
-    socket: {
-      data(_s, data: Uint8Array) {
-        handlers.onData(data);
-      },
-      close() {
-        if (closed) return;
-        closed = true;
-        handlers.onClose();
-      },
-      error(_s, error) {
-        handlers.onError(error as Error);
-      },
-      connectError(_s, error) {
-        handlers.onError(error as Error);
-      },
-      open() {
-        /* nothing: the client sends Hello once connect() resolves */
-      },
+  const events = {
+    data(_s: unknown, data: Uint8Array) {
+      handlers.onData(data);
     },
-  });
+    close() {
+      if (closed) return;
+      closed = true;
+      handlers.onClose();
+    },
+    error(_s: unknown, error: Error) {
+      handlers.onError(error as Error);
+    },
+    connectError(_s: unknown, error: Error) {
+      handlers.onError(error as Error);
+    },
+    open() {
+      /* nothing: the client sends Hello once connect() resolves */
+    },
+  };
+  // `Bun.connect` has separate overloads per transport, so this is two calls
+  // rather than one spread: a `tcp://` target is the Windows/WSL transport.
+  const tcp = parseTcpTarget(path);
+  const socket = tcp
+    ? await Bun.connect({ hostname: tcp[0], port: tcp[1], socket: events })
+    : await Bun.connect({ unix: path, socket: events });
   return {
     write(bytes) {
       socket.write(bytes);

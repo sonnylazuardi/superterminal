@@ -19,6 +19,14 @@ import { join } from 'node:path';
 
 export const SOCKET_FILENAME = 'server.sock';
 export const ALTERNATE_SOCKET_FILENAMES = ['control.sock', 'sock'];
+/**
+ * When set, the server lives across the Windows/WSL boundary and every
+ * socket path in the app becomes a `tcp://host:port` target instead of a
+ * filesystem path. A socket file cannot cross the VM boundary; shared
+ * localhost TCP can (`superterminald --tcp 127.0.0.1:PORT` in WSL).
+ */
+export const TCP_ENV_VAR = 'SUPERTERMINAL_TCP';
+export const TCP_SCHEME = 'tcp://';
 
 export interface PathEnv {
   env?: Record<string, string | undefined>;
@@ -26,7 +34,38 @@ export interface PathEnv {
   uid?: number;
 }
 
+/** `true` for a `tcp://host:port` target rather than a socket path. */
+export function isTcpTarget(target: string): boolean {
+  return target.startsWith(TCP_SCHEME);
+}
+
+/** Parses `tcp://host:port` into `[hostname, port]`, or `null`. */
+export function parseTcpTarget(target: string): [string, number] | null {
+  if (!isTcpTarget(target)) return null;
+  const rest = target.slice(TCP_SCHEME.length);
+  const divider = rest.lastIndexOf(':');
+  if (divider <= 0) return null;
+  const port = Number(rest.slice(divider + 1));
+  if (!Number.isInteger(port) || port <= 0 || port > 65535) return null;
+  return [rest.slice(0, divider), port];
+}
+
+/** The TCP target from `--tcp` / `$SUPERTERMINAL_TCP`, if one is configured. */
+export function tcpTarget(input: PathEnv = {}): string | null {
+  const env = input.env ?? process.env;
+  const addr = env[TCP_ENV_VAR];
+  if (!addr) return null;
+  const target = `${TCP_SCHEME}${addr}`;
+  return parseTcpTarget(target) ? target : null;
+}
+
 function runtimeDir({ env = process.env, platform = process.platform, uid }: PathEnv): string {
+  if (platform === 'win32') {
+    // No daemon ever runs beside a Windows client in v1 (it lives in WSL),
+    // so this is only a fallback when $SUPERTERMINAL_TCP is unset.
+    const base = env['LOCALAPPDATA'] || env['TEMP'] || env['TMP'] || homedir();
+    return join(base, 'superterminal');
+  }
   if (platform === 'darwin') {
     // 02 §1.1. 03 §2 suggests $TMPDIR instead; if the daemon lands there,
     // $SUPERTERMINAL_SOCKET or ALTERNATE_SOCKET_FILENAMES cover the gap.
@@ -48,6 +87,8 @@ function safeUid(): number {
 
 export function defaultSocketPath(input: PathEnv = {}): string {
   const env = input.env ?? process.env;
+  const tcp = tcpTarget({ ...input, env });
+  if (tcp) return tcp;
   const override = env['SUPERTERMINAL_SOCKET'];
   if (override) return override;
   return join(runtimeDir(input), SOCKET_FILENAME);
@@ -56,6 +97,8 @@ export function defaultSocketPath(input: PathEnv = {}): string {
 /** Every path worth probing before deciding no server is running. */
 export function probeCandidates(input: PathEnv = {}): string[] {
   const env = input.env ?? process.env;
+  const tcp = tcpTarget({ ...input, env });
+  if (tcp) return [tcp];
   const override = env['SUPERTERMINAL_SOCKET'];
   if (override) return [override];
   const dir = runtimeDir(input);

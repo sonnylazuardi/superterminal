@@ -27,11 +27,80 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use st_proto::frame::{ConnectionKind, DATA_MAGIC, HANDSHAKE_TIMEOUT_SECS};
-use tokio::io::AsyncReadExt;
-use tokio::net::{UnixListener, UnixStream};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
+use tokio::net::{TcpListener, TcpStream, UnixListener, UnixStream};
 
 use crate::workspace::ClientId;
 use crate::ServerContext;
+
+/// Either side of the Windows/WSL boundary: a Unix socket at home, loopback
+/// TCP across it (`superterminald --tcp 127.0.0.1:PORT`). The first-byte plane
+/// sniffing works on both because it only ever reads bytes.
+#[derive(Debug)]
+pub enum Conn {
+    /// The at-home transport.
+    Unix(UnixStream),
+    /// The Windows-client/WSL-server transport.
+    Tcp(TcpStream),
+}
+
+impl From<UnixStream> for Conn {
+    fn from(stream: UnixStream) -> Self {
+        Conn::Unix(stream)
+    }
+}
+
+impl From<TcpStream> for Conn {
+    fn from(stream: TcpStream) -> Self {
+        Conn::Tcp(stream)
+    }
+}
+
+impl AsyncRead for Conn {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            Conn::Unix(stream) => Pin::new(stream).poll_read(cx, buf),
+            Conn::Tcp(stream) => Pin::new(stream).poll_read(cx, buf),
+        }
+    }
+}
+
+impl AsyncWrite for Conn {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<Result<usize, std::io::Error>> {
+        match self.get_mut() {
+            Conn::Unix(stream) => Pin::new(stream).poll_write(cx, buf),
+            Conn::Tcp(stream) => Pin::new(stream).poll_write(cx, buf),
+        }
+    }
+
+    fn poll_flush(
+        self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), std::io::Error>> {
+        match self.get_mut() {
+            Conn::Unix(stream) => Pin::new(stream).poll_flush(cx),
+            Conn::Tcp(stream) => Pin::new(stream).poll_flush(cx),
+        }
+    }
+
+    fn poll_shutdown(
+        self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), std::io::Error>> {
+        match self.get_mut() {
+            Conn::Unix(stream) => Pin::new(stream).poll_shutdown(cx),
+            Conn::Tcp(stream) => Pin::new(stream).poll_shutdown(cx),
+        }
+    }
+}
 
 /// A boxed future, as returned by a [`DataAcceptor`].
 pub type BoxFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
@@ -43,8 +112,7 @@ pub type BoxFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
 /// (`msg_type` `0x0001`). The acceptor owns the connection from that point,
 /// including decrementing [`crate::metrics::Metrics::data_clients`] when it
 /// closes.
-pub type DataAcceptor =
-    Arc<dyn Fn(UnixStream, Arc<ServerContext>, ClientId) -> BoxFuture + Send + Sync>;
+pub type DataAcceptor = Arc<dyn Fn(Conn, Arc<ServerContext>, ClientId) -> BoxFuture + Send + Sync>;
 
 /// Runs the accept loop until `shutdown` fires.
 ///
@@ -64,7 +132,7 @@ pub async fn accept_loop(listener: UnixListener, ctx: Arc<ServerContext>) {
                     let id = ctx.next_client_id();
                     let ctx = Arc::clone(&ctx);
                     tokio::spawn(async move {
-                        serve(stream, ctx, id).await;
+                        serve(Conn::Unix(stream), ctx, id).await;
                     });
                 }
                 Err(e) => {
@@ -77,8 +145,38 @@ pub async fn accept_loop(listener: UnixListener, ctx: Arc<ServerContext>) {
     }
 }
 
+/// The TCP twin of [`accept_loop`], for `--tcp` (the Windows-client/WSL-server
+/// transport). Same sniffing, same hand-off; only the peer check differs (see
+/// [`check_peer`]).
+pub async fn accept_loop_tcp(listener: TcpListener, ctx: Arc<ServerContext>) {
+    let mut stop = ctx.shutdown.subscribe();
+    loop {
+        tokio::select! {
+            biased;
+            _ = stop.wait() => {
+                tracing::debug!("TCP accept loop stopping");
+                return;
+            }
+            accepted = listener.accept() => match accepted {
+                Ok((stream, addr)) => {
+                    tracing::debug!(%addr, "TCP connection accepted");
+                    let id = ctx.next_client_id();
+                    let ctx = Arc::clone(&ctx);
+                    tokio::spawn(async move {
+                        serve(Conn::Tcp(stream), ctx, id).await;
+                    });
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "TCP accept failed");
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            },
+        }
+    }
+}
+
 /// Serves one accepted connection: uid check, plane sniff, hand-off.
-pub async fn serve(stream: UnixStream, ctx: Arc<ServerContext>, id: ClientId) {
+pub async fn serve(stream: Conn, ctx: Arc<ServerContext>, id: ClientId) {
     ctx.metrics.connections_accepted.inc();
 
     if let Err(reason) = check_peer(&stream, &ctx) {
@@ -140,14 +238,14 @@ enum Sniffed {
     /// A CONTROL connection; `first_byte` is the `{` that must be put back.
     Control {
         /// The stream, positioned after the sniffed byte.
-        stream: UnixStream,
+        stream: Conn,
         /// The byte already consumed.
         first_byte: u8,
     },
     /// A DATA connection whose 4-byte magic has been consumed and verified.
     Data {
         /// The stream, positioned after the magic.
-        stream: UnixStream,
+        stream: Conn,
     },
     /// Neither.
     Unknown {
@@ -156,7 +254,7 @@ enum Sniffed {
     },
 }
 
-async fn sniff(mut stream: UnixStream) -> std::io::Result<Sniffed> {
+async fn sniff(mut stream: Conn) -> std::io::Result<Sniffed> {
     let mut first = [0u8; 1];
     stream.read_exact(&mut first).await?;
 
@@ -186,13 +284,26 @@ async fn sniff(mut stream: UnixStream) -> std::io::Result<Sniffed> {
 /// On Linux and macOS `tokio` exposes the peer's uid directly. Elsewhere the
 /// check is skipped and the `0700` directory plus the `0600` socket carry the
 /// whole burden; the daemon only ever runs on those two platforms in v1.
-fn check_peer(stream: &UnixStream, ctx: &ServerContext) -> Result<(), &'static str> {
+///
+/// TCP connections (`--tcp`) skip the check: there is no peer credential on a
+/// TCP socket. The listener is meant to bind loopback only (the Windows client
+/// reaches it through WSL's shared localhost), so the exposure is one machine.
+/// Binding a non-loopback address is refused at start-up (see
+/// [`crate::lifecycle`]).
+fn check_peer(stream: &Conn, ctx: &ServerContext) -> Result<(), &'static str> {
+    if matches!(stream, Conn::Tcp(_)) {
+        tracing::debug!("TCP peer accepted without a uid check; the listener is loopback-only");
+        return Ok(());
+    }
     let Some(expected) = ctx.allowed_uid else {
         return Ok(());
     };
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
+        let Conn::Unix(stream) = stream else {
+            return Ok(());
+        };
         match stream.peer_cred() {
             Ok(cred) if cred.uid() == expected => Ok(()),
             Ok(_) => Err("peer uid does not match the daemon's"),
@@ -212,6 +323,37 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn the_first_byte_chooses_the_plane_over_tcp_too() {
+        for (bytes, expect_control, expect_data) in [
+            (b"{\"t\":\"hello\"}".to_vec(), true, false),
+            ([DATA_MAGIC.to_vec(), vec![0, 1, 2]].concat(), false, true),
+        ] {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let payload = bytes.clone();
+            let writer = tokio::spawn(async move {
+                let mut stream = TcpStream::connect(addr).await.unwrap();
+                tokio::io::AsyncWriteExt::write_all(&mut stream, &payload)
+                    .await
+                    .unwrap();
+            });
+            let (server, _) = listener.accept().await.unwrap();
+            let sniffed = sniff(Conn::from(server)).await.unwrap();
+            assert_eq!(
+                matches!(sniffed, Sniffed::Control { .. }),
+                expect_control,
+                "control detection for {bytes:?}"
+            );
+            assert_eq!(
+                matches!(sniffed, Sniffed::Data { .. }),
+                expect_data,
+                "data detection for {bytes:?}"
+            );
+            writer.await.unwrap();
+        }
+    }
+
+    #[tokio::test]
     async fn the_first_byte_chooses_the_plane() {
         for (bytes, expect_control, expect_data) in [
             (b"{\"t\":\"hello\"}".to_vec(), true, false),
@@ -220,6 +362,7 @@ mod tests {
             (vec![0xFF, b'X', b'X', b'X'], false, false),
         ] {
             let (mut client, server) = UnixStream::pair().unwrap();
+            let server = Conn::from(server);
             tokio::io::AsyncWriteExt::write_all(&mut client, &bytes)
                 .await
                 .unwrap();

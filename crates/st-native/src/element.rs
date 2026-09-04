@@ -501,16 +501,19 @@ impl GridState {
     /// Grilling Q48: on Linux the primary selection is written when a
     /// selection is made, so middle-click paste works. Never on macOS, where
     /// there is no primary selection and copy is explicit (Q24).
+    #[cfg(target_os = "linux")]
     fn write_primary(&self, cx: &mut gpui::App) {
-        if !cfg!(target_os = "linux") {
-            return;
-        }
         let text = self.selection_text();
         if text.is_empty() {
             return;
         }
         cx.write_to_primary(gpui::ClipboardItem::new_string(text));
     }
+
+    /// No primary selection outside X11: middle-click paste has nothing to
+    /// feed, so this is a no-op (the explicit clipboard path is untouched).
+    #[cfg(not(target_os = "linux"))]
+    fn write_primary(&self, _cx: &mut gpui::App) {}
 
     fn paste(&mut self, text: Option<&str>, cx: &mut gpui::App) {
         let text = match text {

@@ -41,6 +41,13 @@ export function parseArgv(args: string[]): Argv {
         if (value !== undefined) out.socket = value;
         break;
       }
+      case '--tcp': {
+        // The Windows/WSL transport: `--tcp 127.0.0.1:7171` is shorthand for
+        // `--socket tcp://127.0.0.1:7171`, so one plumbing path serves both.
+        const value = inline ?? args[++i];
+        if (value !== undefined) out.socket = `tcp://${value}`;
+        break;
+      }
       case '--config': {
         const value = inline ?? args[++i];
         if (value !== undefined) out.config = value;
@@ -62,6 +69,7 @@ function splitInline(arg: string): [string, string | undefined] {
 export const USAGE = `superterminal — a GPU terminal multiplexer
 
   --socket <path>       control socket (default: $XDG_RUNTIME_DIR/superterminal/control.sock)
+  --tcp <host:port>     control + data over TCP (Windows client, WSL server)
   --config <path>       config.toml to load
   --no-spawn            never start superterminald; fail if none is running
   --foreground-server   run the daemon in the foreground (dev)

@@ -7,7 +7,14 @@ import {
   locateServerBinary,
   probeSocket,
 } from './ensure.js';
-import { defaultSocketPath, probeCandidates, stateDir } from './paths.js';
+import {
+  defaultSocketPath,
+  isTcpTarget,
+  parseTcpTarget,
+  probeCandidates,
+  stateDir,
+  tcpTarget,
+} from './paths.js';
 
 describe('socket paths', () => {
   test('SUPERTERMINAL_SOCKET wins', () => {
@@ -42,9 +49,74 @@ describe('socket paths', () => {
     ]);
   });
 
+  test('SUPERTERMINAL_TCP turns the target into tcp://', () => {
+    const env = { SUPERTERMINAL_TCP: '127.0.0.1:7171' };
+    expect(tcpTarget({ env })).toBe('tcp://127.0.0.1:7171');
+    expect(defaultSocketPath({ env })).toBe('tcp://127.0.0.1:7171');
+    expect(probeCandidates({ env })).toEqual(['tcp://127.0.0.1:7171']);
+    expect(tcpTarget({ env: {} })).toBeNull();
+    expect(tcpTarget({ env: { SUPERTERMINAL_TCP: 'not-an-addr' } })).toBeNull();
+  });
+
+  test('tcp target parsing', () => {
+    expect(isTcpTarget('tcp://127.0.0.1:7171')).toBe(true);
+    expect(isTcpTarget('/tmp/x.sock')).toBe(false);
+    expect(parseTcpTarget('tcp://127.0.0.1:7171')).toEqual(['127.0.0.1', 7171]);
+    expect(parseTcpTarget('tcp://[::1]:7171')).toEqual(['[::1]', 7171]);
+    expect(parseTcpTarget('tcp://no-port')).toBeNull();
+    expect(parseTcpTarget('/tmp/x.sock')).toBeNull();
+  });
+
+  test('win32 falls back to LOCALAPPDATA', () => {
+    expect(
+      defaultSocketPath({ platform: 'win32', env: { LOCALAPPDATA: 'C:\\Users\\x\\AppData\\Local' } }),
+    ).toBe('C:\\Users\\x\\AppData\\Local/superterminal/server.sock');
+  });
+
   test('state dir honours XDG_STATE_HOME', () => {
     expect(stateDir({ env: { XDG_STATE_HOME: '/state' } })).toBe('/state/superterminal');
     expect(stateDir({ env: { HOME: '/home/x' } })).toBe('/home/x/.local/state/superterminal');
+  });
+});
+
+describe('TCP ensure', () => {
+  test('an unreachable TCP target fails without spawning', async () => {
+    let spawned = 0;
+    const err = await ensureServer({
+      socketPath: 'tcp://127.0.0.1:1',
+      probeTimeoutMs: 50,
+      spawn: () => {
+        spawned += 1;
+        return { pid: 1, unref: () => {} };
+      },
+    }).then(
+      () => null,
+      (e) => e as ServerUnavailableError,
+    );
+    expect(err).toBeInstanceOf(ServerUnavailableError);
+    expect(err?.kind).toBe('not_running');
+    expect(err?.message).toContain('WSL');
+    expect(spawned).toBe(0);
+  });
+
+  test('a live TCP listener is returned as-is', async () => {
+    const listener = Bun.listen({
+      hostname: '127.0.0.1',
+      port: 0,
+      socket: {
+        data() {},
+        open() {},
+        close() {},
+        error() {},
+      },
+    });
+    try {
+      const addr = `tcp://127.0.0.1:${listener.port}`;
+      const result = await ensureServer({ socketPath: addr, probeTimeoutMs: 500 });
+      expect(result).toEqual({ socketPath: addr, spawned: false });
+    } finally {
+      listener.stop();
+    }
   });
 });
 

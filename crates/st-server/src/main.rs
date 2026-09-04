@@ -1,7 +1,7 @@
 //! `superterminald` — the Superterminal daemon.
 //!
 //! ```text
-//! superterminald [--foreground] [--daemonize] [--socket <path>]
+//! superterminald [--foreground] [--daemonize] [--socket <path>] [--tcp <addr>]
 //!                [--config <path>] [--state-dir <path>] [--no-idle-exit] [-v|-vv]
 //! ```
 //!
@@ -31,6 +31,12 @@ struct Cli {
     #[arg(long, value_name = "PATH")]
     socket: Option<PathBuf>,
 
+    /// Also listen on loopback TCP (e.g. `--tcp 127.0.0.1:7171`) for the
+    /// Windows client: a socket file cannot cross the WSL boundary, shared
+    /// localhost TCP can. Only loopback addresses are accepted.
+    #[arg(long, value_name = "ADDR")]
+    tcp: Option<std::net::SocketAddr>,
+
     /// Read this `config.toml` instead of the default.
     #[arg(long, value_name = "PATH")]
     config: Option<PathBuf>,
@@ -52,6 +58,7 @@ impl Cli {
     fn options(&self) -> Options {
         Options {
             socket: self.socket.clone(),
+            tcp: self.tcp,
             config: self.config.clone(),
             state_dir: self.state_dir.clone(),
             foreground: self.foreground,
@@ -100,6 +107,9 @@ fn respawn_detached(cli: &Cli) -> anyhow::Result<()> {
     if let Some(path) = &cli.socket {
         child.arg("--socket").arg(path);
     }
+    if let Some(addr) = &cli.tcp {
+        child.arg("--tcp").arg(addr.to_string());
+    }
     if let Some(path) = &cli.config {
         child.arg("--config").arg(path);
     }
@@ -129,6 +139,8 @@ mod tests {
             "--foreground",
             "--socket",
             "/tmp/x.sock",
+            "--tcp",
+            "127.0.0.1:7171",
             "--config",
             "/tmp/config.toml",
             "--state-dir",
@@ -143,6 +155,7 @@ mod tests {
         assert!(options.no_idle_exit);
         assert_eq!(options.verbosity, 2);
         assert_eq!(options.socket.unwrap(), PathBuf::from("/tmp/x.sock"));
+        assert_eq!(options.tcp.unwrap().to_string(), "127.0.0.1:7171");
         assert_eq!(options.config.unwrap(), PathBuf::from("/tmp/config.toml"));
         assert_eq!(options.state_dir.unwrap(), PathBuf::from("/tmp/state"));
     }

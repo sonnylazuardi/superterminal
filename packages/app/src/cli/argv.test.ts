@@ -22,6 +22,11 @@ describe('parseArgv', () => {
     });
   });
 
+  test('--tcp becomes a tcp:// socket', () => {
+    expect(parseArgv(['--tcp', '127.0.0.1:7171']).socket).toBe('tcp://127.0.0.1:7171');
+    expect(parseArgv(['--tcp=127.0.0.1:7171']).socket).toBe('tcp://127.0.0.1:7171');
+  });
+
   test('value flags accept both spellings', () => {
     expect(parseArgv(['--socket', '/tmp/a.sock']).socket).toBe('/tmp/a.sock');
     expect(parseArgv(['--socket=/tmp/b.sock']).socket).toBe('/tmp/b.sock');

@@ -17,7 +17,13 @@
 import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { debug } from '../util/debug.js';
-import { defaultSocketPath, probeCandidates, type PathEnv } from './paths.js';
+import {
+  defaultSocketPath,
+  isTcpTarget,
+  parseTcpTarget,
+  probeCandidates,
+  type PathEnv,
+} from './paths.js';
 
 const log = debug('st:server');
 
@@ -76,8 +82,10 @@ export function isTestEnvironment(env: Record<string, string | undefined> = proc
   return env['NODE_ENV'] === 'test' || Boolean(env['BUN_TEST']) || Boolean(env['VITEST']);
 }
 
-/** Can we open the socket? Closes immediately; never throws. */
+/** Can we open the target? Closes immediately; never throws. */
 export async function probeSocket(path: string, timeoutMs = 500): Promise<boolean> {
+  const tcp = parseTcpTarget(path);
+  if (tcp) return probeTcp(tcp[0], tcp[1], timeoutMs);
   let settled = false;
   return await new Promise<boolean>((resolve) => {
     const finish = (ok: boolean) => {
@@ -145,6 +153,46 @@ function defaultSpawn(bin: string): { pid: number; unref(): void } {
 
 const defaultSleep = (ms: number) => Bun.sleep(ms);
 
+async function probeTcp(host: string, port: number, timeoutMs: number): Promise<boolean> {
+  let settled = false;
+  return await new Promise<boolean>((resolve) => {
+    const finish = (ok: boolean) => {
+      if (settled) return;
+      settled = true;
+      resolve(ok);
+    };
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    (timer as unknown as { unref?: () => void }).unref?.();
+
+    Bun.connect({
+      hostname: host,
+      port,
+      socket: {
+        data() {},
+        open(socket) {
+          socket.end();
+        },
+        close() {},
+        error() {},
+        connectError() {},
+      },
+    })
+      .then((socket) => {
+        clearTimeout(timer);
+        try {
+          socket.end();
+        } catch {
+          /* ignore */
+        }
+        finish(true);
+      })
+      .catch(() => {
+        clearTimeout(timer);
+        finish(false);
+      });
+  });
+}
+
 export async function ensureServer(
   options: EnsureServerOptions = {},
 ): Promise<EnsureServerResult> {
@@ -163,6 +211,21 @@ export async function ensureServer(
       log(`server already listening on ${candidate}`);
       return { socketPath: candidate, spawned: false };
     }
+  }
+
+  // 1b. A TCP target means the server lives in WSL: there is no local binary
+  // to spawn (and spawning a Linux daemon from Windows is meaningless), so a
+  // failed probe is a hard error with the fix attached.
+  const only = candidates.length === 1 ? candidates[0] : undefined;
+  const tcpTarget = only !== undefined && isTcpTarget(only) ? only : null;
+  if (tcpTarget) {
+    throw new ServerUnavailableError(
+      'not_running',
+      `no server on ${tcpTarget}; start one in WSL first: ` +
+        `superterminald --tcp ${tcpTarget.replace('tcp://', '')} (then relaunch)`,
+      tcpTarget,
+      candidates,
+    );
   }
 
   if (options.noSpawn) {

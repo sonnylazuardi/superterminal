@@ -7,9 +7,14 @@ use std::process::ExitCode as ProcessExit;
 use clap::Parser;
 use st_cli::cli::{Cli, Command, ConfigAction};
 use st_cli::cmd;
+use st_cli::exit::CliError;
 use st_cli::exit::{ExitCode, Result};
 use st_cli::render::RenderOptions;
-use st_cli::transport::{resolve_lock_path, resolve_socket_path, UnixConnector};
+use st_cli::transport::Transport;
+use st_cli::transport::{
+    resolve_lock_path, resolve_socket_path, resolve_tcp_addr, Connector, TcpConnector,
+    UnixConnector,
+};
 
 fn main() -> ProcessExit {
     let cli = Cli::parse();
@@ -30,9 +35,42 @@ fn main() -> ProcessExit {
     }
 }
 
+/// Either transport, chosen by `--tcp` / `$SUPERTERMINAL_TCP` / `--socket`.
+#[derive(Debug, Clone)]
+enum AnyConnector {
+    Tcp(TcpConnector),
+    Unix(UnixConnector),
+}
+
+impl AnyConnector {
+    fn resolve(cli: &Cli) -> Self {
+        match resolve_tcp_addr(cli.tcp) {
+            Some(addr) => Self::Tcp(TcpConnector::new(addr)),
+            None => Self::Unix(UnixConnector::new(resolve_socket_path(
+                cli.socket.as_deref(),
+            ))),
+        }
+    }
+}
+
+impl Connector for AnyConnector {
+    fn connect(&self) -> std::result::Result<Box<dyn Transport>, CliError> {
+        match self {
+            Self::Tcp(c) => c.connect(),
+            Self::Unix(c) => c.connect(),
+        }
+    }
+
+    fn describe(&self) -> String {
+        match self {
+            Self::Tcp(c) => c.describe(),
+            Self::Unix(c) => c.describe(),
+        }
+    }
+}
+
 fn dispatch(cli: &Cli, out: &mut dyn Write) -> Result<()> {
-    let socket = resolve_socket_path(cli.socket.as_deref());
-    let connector = UnixConnector::new(socket);
+    let connector = AnyConnector::resolve(cli);
 
     match &cli.command {
         Command::Status(args) => cmd::status::run(&connector, args.json, out),

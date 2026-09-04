@@ -668,15 +668,108 @@ impl DataPlaneHandle {
 
 // --------------------------------------------------------------- the I/O thread
 
-#[cfg(unix)]
 mod io_thread {
+    use std::net::{SocketAddr, TcpStream};
+    #[cfg(unix)]
     use std::os::unix::net::UnixStream;
+    #[cfg(unix)]
     use std::path::{Path, PathBuf};
     use std::sync::atomic::Ordering;
     use std::sync::Arc;
     use std::thread::JoinHandle;
 
     use super::*;
+
+    /// Either end of the Windows/WSL boundary: a Unix socket at home, TCP
+    /// across it. The framing above is transport-agnostic (`02-protocol.md`
+    /// §1.1), so this enum plus `Target` below is the whole TCP story on the
+    /// data plane: `serve` only ever calls `Read`/`Write`/`try_clone`.
+    #[derive(Debug)]
+    pub enum Stream {
+        /// A Unix-domain socket: the at-home transport.
+        #[cfg(unix)]
+        Unix(UnixStream),
+        /// Loopback TCP: the Windows-client/WSL-server transport.
+        Tcp(TcpStream),
+    }
+
+    #[cfg(unix)]
+    impl From<UnixStream> for Stream {
+        fn from(stream: UnixStream) -> Self {
+            Stream::Unix(stream)
+        }
+    }
+
+    impl From<TcpStream> for Stream {
+        fn from(stream: TcpStream) -> Self {
+            Stream::Tcp(stream)
+        }
+    }
+
+    impl Stream {
+        fn try_clone(&self) -> std::io::Result<Stream> {
+            match self {
+                #[cfg(unix)]
+                Stream::Unix(stream) => stream.try_clone().map(Stream::Unix),
+                Stream::Tcp(stream) => stream.try_clone().map(Stream::Tcp),
+            }
+        }
+
+        fn shutdown_both(&self) -> std::io::Result<()> {
+            match self {
+                #[cfg(unix)]
+                Stream::Unix(stream) => stream.shutdown(std::net::Shutdown::Both),
+                Stream::Tcp(stream) => stream.shutdown(std::net::Shutdown::Both),
+            }
+        }
+    }
+
+    impl std::io::Read for Stream {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            match self {
+                #[cfg(unix)]
+                Stream::Unix(stream) => stream.read(buf),
+                Stream::Tcp(stream) => stream.read(buf),
+            }
+        }
+    }
+
+    impl std::io::Write for Stream {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            match self {
+                #[cfg(unix)]
+                Stream::Unix(stream) => stream.write(buf),
+                Stream::Tcp(stream) => stream.write(buf),
+            }
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            match self {
+                #[cfg(unix)]
+                Stream::Unix(stream) => stream.flush(),
+                Stream::Tcp(stream) => stream.flush(),
+            }
+        }
+    }
+
+    /// Where to (re)connect. Stored so the I/O thread can redial after a
+    /// drop without the caller repeating itself.
+    #[derive(Debug, Clone)]
+    enum Target {
+        #[cfg(unix)]
+        Unix(PathBuf),
+        Tcp(SocketAddr),
+    }
+
+    impl Target {
+        fn connect(&self) -> std::io::Result<Stream> {
+            match self {
+                #[cfg(unix)]
+                Target::Unix(path) => UnixStream::connect(path).map(Stream::Unix),
+                Target::Tcp(addr) => TcpStream::connect(addr).map(Stream::Tcp),
+            }
+        }
+    }
 
     /// A running Data Plane connection: the handle plus its I/O thread.
     ///
@@ -696,34 +789,56 @@ mod io_thread {
         /// The first connection attempt is synchronous, so a bad path is an
         /// error rather than a silent retry loop; every *later* attempt is the
         /// thread's business.
+        #[cfg(unix)]
         pub fn connect(
             path: impl AsRef<Path>,
             options: DataPlaneOptions,
             wake: WakeFn,
         ) -> Result<Self, DataPlaneError> {
-            let path = path.as_ref().to_path_buf();
-            let stream = UnixStream::connect(&path)?;
+            let target = Target::Unix(path.as_ref().to_path_buf());
+            let stream = target.connect()?;
             let shared = Shared::new(options, wake);
-            Ok(Self::spawn(shared, stream, Some(path)))
+            Ok(Self::spawn(shared, stream, Some(target)))
+        }
+
+        /// Connects over TCP (`superterminald --tcp 127.0.0.1:PORT`) and
+        /// starts the I/O thread. This is the Windows-client/WSL-server path:
+        /// a socket file cannot cross the VM boundary, loopback TCP can.
+        ///
+        /// The first connection attempt is synchronous, like [`connect`](Self::connect).
+        pub fn connect_tcp(
+            addr: SocketAddr,
+            options: DataPlaneOptions,
+            wake: WakeFn,
+        ) -> Result<Self, DataPlaneError> {
+            let target = Target::Tcp(addr);
+            let stream = target.connect()?;
+            let shared = Shared::new(options, wake);
+            Ok(Self::spawn(shared, stream, Some(target)))
         }
 
         /// Starts the I/O thread on an already-connected stream.
         ///
-        /// This is what the tests use with [`UnixStream::pair`], and what a
-        /// caller with its own socket setup (an inherited fd, say) wants.
-        /// Without a path there is nothing to reconnect to, so the thread
-        /// stops when the stream closes.
+        /// This is what the tests use (a [`UnixStream::pair`] on Unix, a
+        /// loopback TCP pair everywhere), and what a caller with its own
+        /// socket setup (an inherited fd, say) wants. Without a target there
+        /// is nothing to reconnect to, so the thread stops when the stream
+        /// closes.
         #[must_use]
-        pub fn from_stream(stream: UnixStream, options: DataPlaneOptions, wake: WakeFn) -> Self {
+        pub fn from_stream(
+            stream: impl Into<Stream>,
+            options: DataPlaneOptions,
+            wake: WakeFn,
+        ) -> Self {
             let shared = Shared::new(options, wake);
-            Self::spawn(shared, stream, None)
+            Self::spawn(shared, stream.into(), None)
         }
 
-        fn spawn(shared: Arc<Shared>, stream: UnixStream, path: Option<PathBuf>) -> Self {
+        fn spawn(shared: Arc<Shared>, stream: Stream, target: Option<Target>) -> Self {
             let handle = DataPlaneHandle::from_shared(Arc::clone(&shared));
             let thread = std::thread::Builder::new()
                 .name("st-dataplane".into())
-                .spawn(move || run(shared, stream, path))
+                .spawn(move || run(shared, stream, target))
                 .expect("spawning the st-dataplane thread");
             Self {
                 handle,
@@ -766,15 +881,15 @@ mod io_thread {
 
     /// The I/O thread: serve the stream we were handed, then reconnect for as
     /// long as we are configured to and not shutting down.
-    fn run(shared: Arc<Shared>, stream: UnixStream, path: Option<PathBuf>) {
+    fn run(shared: Arc<Shared>, stream: Stream, target: Option<Target>) {
         let mut stream = Some(stream);
         let mut delay = shared.options.reconnect_delay;
 
         loop {
             let next = match stream.take() {
                 Some(s) => Some(s),
-                None => match path.as_ref() {
-                    Some(path) => match UnixStream::connect(path) {
+                None => match target.as_ref() {
+                    Some(target) => match target.connect() {
                         Ok(s) => Some(s),
                         Err(err) => {
                             tracing::debug!(%err, "data-plane reconnect failed");
@@ -797,7 +912,7 @@ mod io_thread {
 
             if shared.shutdown.load(Ordering::Acquire)
                 || !shared.options.reconnect
-                || path.is_none()
+                || target.is_none()
             {
                 break;
             }
@@ -809,7 +924,7 @@ mod io_thread {
 
     /// Handshake, re-attach, then read until the stream ends. Returns why it
     /// ended.
-    fn serve(shared: &Arc<Shared>, stream: UnixStream) -> String {
+    fn serve(shared: &Arc<Shared>, stream: Stream) -> String {
         let Ok(writer) = stream.try_clone() else {
             return "could not duplicate the socket".to_string();
         };
@@ -820,7 +935,7 @@ mod io_thread {
         shared.set_conn(Some(Conn {
             write: Box::new(writer),
             close: Box::new(move || {
-                let _ = closer.shutdown(std::net::Shutdown::Both);
+                let _ = closer.shutdown_both();
             }),
         }));
 
@@ -879,8 +994,7 @@ mod io_thread {
     }
 }
 
-#[cfg(unix)]
-pub use io_thread::DataPlaneConnection;
+pub use io_thread::{DataPlaneConnection, Stream};
 
 #[cfg(test)]
 mod tests {
@@ -1451,6 +1565,130 @@ mod tests {
         core.feed(&wire(&[DataMsg::Snapshot(Box::new(snapshot(1, &["a"])))]))
             .unwrap();
         assert!(sink.messages().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod tcp_tests {
+    //! The same handshake over loopback TCP: the Windows-client/WSL-server
+    //! transport. Runs on every platform, including Windows CI later.
+
+    use super::tests_support::*;
+    use super::*;
+    use st_proto::HelloAck;
+    use std::net::TcpListener;
+    use std::sync::atomic::AtomicUsize;
+    use std::time::Instant;
+
+    fn wait_for(mut f: impl FnMut() -> bool) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            if f() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        f()
+    }
+
+    #[test]
+    fn handshake_attach_and_snapshot_over_tcp() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let mut decoder = FrameDecoder::expecting_magic();
+            let mut buf = [0u8; 4096];
+            let mut got = Vec::new();
+
+            while got.len() < 2 {
+                let n = stream.read(&mut buf).expect("read");
+                assert!(n > 0, "client closed early");
+                decoder.push(&buf[..n]);
+                while let Some(frame) = decoder.next_frame().expect("framing") {
+                    got.push(DataMsg::from_frame(frame.msg_type, &frame.payload).expect("decode"));
+                }
+                if got.len() == 1 {
+                    let ack = DataMsg::HelloAck(HelloAck {
+                        proto_version: PROTO_VERSION,
+                        server_build_id: "fake-tcp-server".into(),
+                        workspace_revision: 7,
+                        server_pid: 4321,
+                    });
+                    let mut out = Vec::new();
+                    ack.encode_to(&mut out).unwrap();
+                    stream.write_all(&out).expect("write ack");
+                }
+            }
+
+            let mut out = Vec::new();
+            DataMsg::Snapshot(Box::new(snapshot_for(SurfaceId(5), 1, &["over tcp"])))
+                .encode_to(&mut out)
+                .unwrap();
+            stream.write_all(&out).expect("write snapshot");
+
+            loop {
+                match stream.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {}
+                }
+            }
+            got
+        });
+
+        let wakes = Arc::new(AtomicUsize::new(0));
+        let for_wake = Arc::clone(&wakes);
+        let conn = DataPlaneConnection::connect_tcp(
+            addr,
+            DataPlaneOptions {
+                build_id: "test-build".into(),
+                reconnect: false,
+                ..DataPlaneOptions::default()
+            },
+            Box::new(move || {
+                for_wake.fetch_add(1, Ordering::AcqRel);
+            }),
+        )
+        .expect("connect");
+
+        assert!(
+            wait_for(|| conn.is_connected()),
+            "the I/O thread should connect"
+        );
+        conn.attach(SurfaceId(5), AttachMode::Active)
+            .expect("attach");
+        assert!(
+            wait_for(|| conn.with_replica(SurfaceId(5), |r| r.seq()) == Some(Seq(1))),
+            "the snapshot should have landed"
+        );
+        assert!(wakes.load(Ordering::Acquire) > 0);
+
+        let events = conn.take_events();
+        assert!(events.iter().any(|e| matches!(
+            e,
+            DataPlaneEvent::Connected {
+                server_pid: 4321,
+                ..
+            }
+        )));
+
+        conn.shutdown();
+        let received = server.join().expect("server thread");
+        assert!(matches!(
+            &received[0],
+            DataMsg::Hello(h) if h.client_kind == ClientKind::Data && h.build_id == "test-build"
+        ));
+        assert!(matches!(&received[1], DataMsg::Attach(_)));
+    }
+
+    #[test]
+    fn connecting_to_a_closed_tcp_port_fails_immediately() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        drop(listener);
+        DataPlaneConnection::connect_tcp(addr, DataPlaneOptions::default(), Box::new(|| {}))
+            .unwrap_err();
     }
 }
 

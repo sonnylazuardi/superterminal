@@ -7,6 +7,8 @@
 //! CLI uses [`UnixConnector`], and tests can hand in anything else.
 
 use std::io::{self, Read, Write};
+use std::net::{SocketAddr, TcpStream};
+#[cfg(unix)]
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -29,6 +31,21 @@ pub trait Transport: Read + Write + Send {
     fn shutdown_write(&self) -> io::Result<()>;
 }
 
+impl Transport for TcpStream {
+    fn try_clone_box(&self) -> io::Result<Box<dyn Transport>> {
+        Ok(Box::new(self.try_clone()?))
+    }
+
+    fn set_read_timeout(&self, dur: Option<Duration>) -> io::Result<()> {
+        TcpStream::set_read_timeout(self, dur)
+    }
+
+    fn shutdown_write(&self) -> io::Result<()> {
+        self.shutdown(std::net::Shutdown::Write)
+    }
+}
+
+#[cfg(unix)]
 impl Transport for UnixStream {
     fn try_clone_box(&self) -> io::Result<Box<dyn Transport>> {
         Ok(Box::new(self.try_clone()?))
@@ -49,8 +66,55 @@ pub trait Connector {
     /// code.
     fn connect(&self) -> Result<Box<dyn Transport>, CliError>;
 
-    /// The path this connector will dial, for messages.
-    fn describe(&self) -> &Path;
+    /// Where this connector dials, for messages.
+    fn describe(&self) -> String;
+}
+
+/// A TCP connector: the Windows-client/WSL-server transport
+/// (`--tcp 127.0.0.1:7171`, `$SUPERTERMINAL_TCP`).
+#[derive(Debug, Clone)]
+pub struct TcpConnector {
+    addr: SocketAddr,
+}
+
+impl TcpConnector {
+    /// Dials `addr`.
+    #[must_use]
+    pub fn new(addr: SocketAddr) -> Self {
+        Self { addr }
+    }
+}
+
+impl Connector for TcpConnector {
+    fn connect(&self) -> Result<Box<dyn Transport>, CliError> {
+        match TcpStream::connect(self.addr) {
+            Ok(stream) => {
+                let _ = Transport::set_read_timeout(&stream, Some(Duration::from_secs(30)));
+                Ok(Box::new(stream))
+            }
+            Err(err) => Err(CliError::no_server(format!(
+                "cannot connect to TCP {}: {err}",
+                self.addr
+            ))
+            .with_hint("is superterminald running with --tcp <addr>?")),
+        }
+    }
+
+    fn describe(&self) -> String {
+        format!("TCP {}", self.addr)
+    }
+}
+
+/// Resolves the TCP address in precedence order: `--tcp`, then
+/// `$SUPERTERMINAL_TCP`.
+#[must_use]
+pub fn resolve_tcp_addr(flag: Option<SocketAddr>) -> Option<SocketAddr> {
+    if let Some(addr) = flag {
+        return Some(addr);
+    }
+    std::env::var("SUPERTERMINAL_TCP")
+        .ok()
+        .and_then(|text| text.parse().ok())
 }
 
 /// The production connector: a Unix domain socket (§1.1).
@@ -80,8 +144,8 @@ impl Connector for UnixConnector {
         }
     }
 
-    fn describe(&self) -> &Path {
-        &self.path
+    fn describe(&self) -> String {
+        self.path.display().to_string()
     }
 }
 
@@ -180,6 +244,23 @@ mod tests {
         assert_eq!(denied.exit, ExitCode::Failure);
     }
 
+    #[test]
+    fn a_tcp_loopback_pair_is_a_transport() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let a = TcpStream::connect(addr).unwrap();
+        let (b, _) = listener.accept().unwrap();
+        let mut a2 = a.try_clone_box().unwrap();
+        a2.write_all(b"ping").unwrap();
+        a2.flush().unwrap();
+        let mut buf = [0u8; 4];
+        (&b).read_exact(&mut buf).unwrap();
+        assert_eq!(&buf, b"ping");
+        Transport::set_read_timeout(&a, Some(Duration::from_millis(50))).unwrap();
+        a.shutdown_write().unwrap();
+    }
+
+    #[cfg(unix)]
     #[test]
     fn a_unix_stream_pair_is_a_transport() {
         let (a, b) = UnixStream::pair().unwrap();

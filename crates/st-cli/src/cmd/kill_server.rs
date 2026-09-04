@@ -26,7 +26,7 @@ pub fn run(
     force: bool,
     out: &mut dyn Write,
 ) -> Result<()> {
-    let socket = connector.describe().display().to_string();
+    let socket = connector.describe();
 
     match ControlClient::connect(connector) {
         Ok(mut client) => {

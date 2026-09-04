@@ -84,7 +84,6 @@ pub use palette::{Palette, ResolvedStyle, Rgb};
 pub use replica::{Gap, Replica, ReplicaConfig, DEFAULT_HISTORY_CAP};
 pub use selection::{AbsPoint, Selection, SelectionConfig, SelectionMode};
 
-#[cfg(unix)]
 pub use dataplane::DataPlaneConnection;
 
 /// Everything `st-native` typically imports.

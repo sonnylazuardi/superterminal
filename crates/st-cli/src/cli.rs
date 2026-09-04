@@ -29,6 +29,13 @@ pub struct Cli {
     #[arg(long, short = 's', global = true, value_name = "PATH")]
     pub socket: Option<PathBuf>,
 
+    /// Talk to the server over TCP instead (e.g. `--tcp 127.0.0.1:7171`).
+    ///
+    /// Defaults to $SUPERTERMINAL_TCP. This is the Windows-client/WSL-server
+    /// transport: a socket file cannot cross the VM boundary.
+    #[arg(long, global = true, value_name = "ADDR")]
+    pub tcp: Option<std::net::SocketAddr>,
+
     /// Log level for st's own diagnostics; overrides $SUPERTERMINAL_LOG.
     #[arg(long, global = true, value_name = "LEVEL")]
     pub log_level: Option<String>,
