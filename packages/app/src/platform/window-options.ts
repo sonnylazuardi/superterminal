@@ -68,7 +68,7 @@ export function buildWindowOptions(config: Config, platform: PlatformInfo): Wind
     // macOS draws chrome under the traffic lights; Linux has none, so the tab
     // strip starts at the top.
     titlebarTransparent: platform.isMac,
-    ...(platform.isMac ? { trafficLightX: 18, trafficLightY: 18 } : {}),
+    ...(platform.isMac ? { trafficLightX: 18, trafficLightY: 13 } : {}),
     focus: true,
   };
 }

@@ -57,17 +57,21 @@ export function CommandPalette() {
   return (
     <anchored
       testId="command-palette"
+      side="bottom"
+      align="center"
       anchor="topCenter"
-      offset={{ x: 0, y: 80 }}
+      offset={{ x: 0, y: tokens.strip.titleBarHeight + tokens.space.xl }}
       style={{
         width: WIDTH,
+        display: 'flex', // REQUIRED or children are blocks
         flexDirection: 'column',
         backgroundColor: tokens.bg.overlay,
         borderRadius: tokens.radius.panel,
         borderWidth: tokens.border.width,
         borderColor: tokens.border.glass,
-        padding: 8,
-        gap: 4,
+        overflow: 'hidden', // keep rounded corners from being painted over
+        padding: tokens.space.lg,
+        gap: tokens.space.xs,
       }}
     >
       <input
@@ -76,9 +80,10 @@ export function CommandPalette() {
         value={query}
         placeholder={mode === 'commands' ? 'Run a command…' : 'Switch or create a session…'}
         style={{
-          height: 32,
-          paddingLeft: 10,
-          paddingRight: 10,
+          height: tokens.strip.paletteInputHeight,
+          paddingLeft: tokens.space.lg,
+          paddingRight: tokens.space.lg,
+          marginBottom: tokens.space.md,
           borderRadius: tokens.radius.tab,
           backgroundColor: tokens.bg.glass,
           borderWidth: tokens.border.width,
@@ -115,12 +120,13 @@ export function CommandPalette() {
             testId={`palette-row-${row.key}`}
             onClick={row.activate}
             style={{
+              display: 'flex',
               flexDirection: 'row',
               alignItems: 'center',
-              justifyContent: 'space-between',
-              height: 28,
-              paddingLeft: 10,
-              paddingRight: 10,
+              height: tokens.strip.rowHeight,
+              paddingLeft: tokens.space.lg,
+              paddingRight: tokens.space.lg,
+              gap: tokens.space.lg,
               borderRadius: tokens.radius.tab,
               backgroundColor: selected ? tokens.bg.glassActive : 'transparent',
               borderWidth: tokens.border.width,
@@ -129,20 +135,31 @@ export function CommandPalette() {
               hover: { backgroundColor: tokens.bg.glassHover },
             }}
           >
-            <text style={{ color: tokens.fg.primary, fontSize: tokens.font.chrome }}>
+            <text
+              style={{
+                color: tokens.fg.primary,
+                fontSize: tokens.font.chrome,
+                flexGrow: 1,
+                minWidth: 0,
+                overflow: 'hidden',
+                whiteSpace: 'nowrap',
+                textOverflow: 'ellipsis',
+              }}
+            >
               {row.title}
             </text>
-            <text style={{ color: tokens.fg.muted, fontSize: tokens.font.chip }}>{row.hint}</text>
+            <text style={{ color: tokens.fg.muted, fontSize: tokens.font.chip, flexShrink: 0 }}>
+              {row.hint}
+            </text>
           </div>
         );
       })}
       {rows.length === 0 ? (
-        <text
-          testId="palette-empty"
-          style={{ color: tokens.fg.muted, fontSize: tokens.font.chrome, padding: 8 }}
-        >
-          No matches
-        </text>
+        <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', height: tokens.strip.rowHeight }}>
+          <text testId="palette-empty" style={{ color: tokens.fg.muted, fontSize: tokens.font.chrome }}>
+            No matches
+          </text>
+        </div>
       ) : null}
     </anchored>
   );

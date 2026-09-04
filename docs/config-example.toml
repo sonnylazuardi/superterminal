@@ -29,8 +29,11 @@ line_height = 1.2
 # "auto" resolves to "blurred" on macOS and "opaque" on Linux;
 # "blurred" behaves as "transparent" on Linux (no blur there).
 background = "auto"
-# Put the tab strip down the left edge instead of along the top.
-vertical_tabs = false
+# Put the tab strip down the left edge instead of along the top. Default since
+# the macOS bring-up: a sidebar keeps full shell titles readable, where the
+# horizontal strip has to ellipsize them after about three tabs. Set false for
+# the horizontal strip; the title bar's leftmost button toggles it at runtime.
+vertical_tabs = true
 
 # Pixels between the window edge and the cell grid.
 # The scrollbar is drawn inside the right padding.

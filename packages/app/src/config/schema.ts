@@ -37,7 +37,7 @@ export const FontSchema = z
 export const WindowSchema = z
   .object({
     background: WindowBackgroundSchema.default('auto'),
-    verticalTabs: z.boolean().default(false),
+    verticalTabs: z.boolean().default(true),
     width: z.number().positive().optional(),
     height: z.number().positive().optional(),
   })

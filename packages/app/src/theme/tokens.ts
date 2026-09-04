@@ -9,34 +9,77 @@
  */
 
 export interface Tokens {
-  bg: { glass: string; glassHover: string; glassActive: string; overlay: string };
+  bg: {
+    glass: string;
+    glassHover: string;
+    glassActive: string;
+    /** Chips inside an already-glass surface (row icons); softer than `glass`. */
+    glassSubtle: string;
+    overlay: string;
+  };
   border: { glass: string; width: number };
   fg: { primary: string; muted: string; danger: string };
   accent: string;
-  radius: { panel: number; tab: number; chip: number };
+  radius: { panel: number; tab: number; chip: number; chipSmall: number };
   font: { chrome: number; chip: number; paletteInput: number; family?: string };
-  /** macOS traffic lights need 58 px of headroom. */
+  space: { xs: number; sm: number; md: number; lg: number; xl: number };
   padding: { trafficLights: number };
   strip: {
     height: number;
+    titleBarHeight: number;
+    footerHeight: number;
+    iconButton: number;
+    sidebarPadding: number;
+    sidebarSectionLabel: number;
+    sectionHeaderHeight: number;
+    rowIcon: number;
+    rowPaddingX: number;
+    rowHeight: number;
+    paletteInputHeight: number;
+    chipHeight: number;
+    renameWidth: number;
     tabHeight: number;
+    toastMaxWidth: number;
     tabMaxWidth: number;
+    tabMinWidth: number;
     gap: number;
     paddingX: number;
     verticalWidth: number;
   };
 }
 
+const SPACE = { xs: 2, sm: 4, md: 6, lg: 8, xl: 12 } as const;
+
+// Pixel-read of the traffic-light group with trafficLightX: 18.
+// Buttons are 14pt across on a 23pt pitch: x 18..32, 41..55, 64..78.
+// Group ends at 78, NOT the textbook 70 (3×12 on a 20pt pitch).
+const TRAFFIC_LIGHTS_RIGHT = 78;
+
 const shared = {
   fg: { primary: '#F2F2F2', muted: '#FFFFFF80', danger: '#FF6B6B' },
   accent: '#7AA2F7',
-  radius: { panel: 16, tab: 8, chip: 999 },
+  radius: { panel: 16, tab: 8, chip: 999, chipSmall: 6 },
   font: { chrome: 12.5, chip: 11.5, paletteInput: 14 },
-  padding: { trafficLights: 58 },
+  space: SPACE,
+  padding: { trafficLights: TRAFFIC_LIGHTS_RIGHT + SPACE.lg }, // 86
   strip: {
     height: 36,
+    titleBarHeight: 38, // buttons sit y 13..27; 38 → symmetric band
+    footerHeight: 32,
+    iconButton: 22,
+    sidebarPadding: 8,
+    sidebarSectionLabel: 11,
+    sectionHeaderHeight: 24,
+    rowIcon: 18,
+    rowPaddingX: 8,
+    rowHeight: 30,
+    paletteInputHeight: 32,
+    chipHeight: 22,
+    renameWidth: 140,
     tabHeight: 28,
+    toastMaxWidth: 320,
     tabMaxWidth: 220,
+    tabMinWidth: 90,
     gap: 4,
     paddingX: 12,
     verticalWidth: 220,
@@ -46,9 +89,10 @@ const shared = {
 export const glassTokens: Tokens = {
   bg: {
     glass: '#FFFFFF0D',
-    glassHover: '#FFFFFF1A',
+    glassHover: '#FFFFFF14',
     glassActive: '#FFFFFF26',
-    overlay: '#16161ECC',
+    glassSubtle: '#FFFFFF14',
+    overlay: '#16161EFA',
   },
   border: { glass: '#FFFFFF1F', width: 1 },
   ...shared,
@@ -60,6 +104,7 @@ export const opaqueTokens: Tokens = {
     glass: '#1E1E22',
     glassHover: '#26262C',
     glassActive: '#2A2A30',
+    glassSubtle: '#24242A',
     overlay: '#16161E',
   },
   border: { glass: '#2E2E36', width: 1 },

@@ -73,14 +73,15 @@ export function Banner() {
     <div
       testId="banner"
       style={{
+        display: 'flex',
         flexDirection: 'row',
         alignItems: 'center',
         justifyContent: 'space-between',
-        gap: 12,
-        paddingLeft: 12,
-        paddingRight: 12,
-        paddingTop: 8,
-        paddingBottom: 8,
+        gap: tokens.space.lg,
+        paddingLeft: tokens.space.xl,
+        paddingRight: tokens.space.xl,
+        paddingTop: tokens.space.lg,
+        paddingBottom: tokens.space.lg,
         backgroundColor: tokens.bg.glass,
         borderBottomWidth: tokens.border.width,
         borderColor: tokens.border.glass,
@@ -91,6 +92,9 @@ export function Banner() {
         style={{
           color: content.danger ? tokens.fg.danger : tokens.fg.muted,
           fontSize: tokens.font.chrome,
+          flexGrow: 1,
+          minWidth: 0,
+          overflow: 'hidden',
         }}
       >
         {content.text}
@@ -100,10 +104,12 @@ export function Banner() {
           testId="banner-action"
           onClick={content.action.run}
           style={{
-            paddingLeft: 10,
-            paddingRight: 10,
-            paddingTop: 4,
-            paddingBottom: 4,
+            display: 'flex',
+            flexShrink: 0,
+            paddingLeft: tokens.space.md,
+            paddingRight: tokens.space.md,
+            paddingTop: tokens.space.xs,
+            paddingBottom: tokens.space.xs,
             borderRadius: tokens.radius.tab,
             backgroundColor: tokens.bg.glassActive,
             cursor: 'pointer',
@@ -127,9 +133,24 @@ export function StatusToasts() {
   return (
     <anchored
       testId="toasts"
+      side="bottom"
+      align="end"
       anchor="bottomRight"
-      offset={{ x: -16, y: -16 }}
-      style={{ flexDirection: 'column', gap: 6 }}
+      offset={{ x: -tokens.space.xl, y: -tokens.space.xl }}
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        gap: tokens.space.xs,
+        // The panel surface lives on the STACK: an <anchored> layer whose
+        // background resolves to alpha 0 is forced opaque #1A1A1A, which
+        // would show as grey in the gaps between per-toast panels.
+        backgroundColor: tokens.bg.overlay,
+        borderRadius: tokens.radius.tab,
+        borderWidth: tokens.border.width,
+        borderColor: tokens.border.glass,
+        padding: tokens.space.sm,
+        maxWidth: tokens.strip.toastMaxWidth,
+      }}
     >
       {toasts.map((toast) => (
         <div
@@ -137,14 +158,7 @@ export function StatusToasts() {
           testId={`toast-${toast.id}`}
           onClick={() => store.dispatch({ type: 'toast.dismiss', id: toast.id })}
           style={{
-            paddingLeft: 12,
-            paddingRight: 12,
-            paddingTop: 6,
-            paddingBottom: 6,
-            borderRadius: tokens.radius.tab,
-            backgroundColor: tokens.bg.overlay,
-            borderWidth: tokens.border.width,
-            borderColor: tokens.border.glass,
+            display: 'flex',
             cursor: 'pointer',
           }}
         >
@@ -152,6 +166,9 @@ export function StatusToasts() {
             style={{
               color: toast.kind === 'error' ? tokens.fg.danger : tokens.fg.primary,
               fontSize: tokens.font.chip,
+              // No nowrap: long server errors wrap inside toastMaxWidth
+              // instead of spanning the window.
+              minWidth: 0,
             }}
           >
             {toast.text}

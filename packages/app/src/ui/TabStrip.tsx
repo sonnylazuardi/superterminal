@@ -1,6 +1,9 @@
 /**
  * Tab strip (05 §4, §7): session chip, one tab per Tab, new-tab button.
- * Horizontal (height 36) and vertical (width 220) variants share every child.
+ *
+ * In vertical mode this is ONLY the scrolling list — `App.tsx` owns the
+ * sidebar column (width, background, divider). In horizontal mode it keeps
+ * owning its own row chrome.
  *
  * Every `<text>` sets `color` explicitly — GPUI does not inherit it.
  */
@@ -10,6 +13,7 @@ import { selectActiveSession, selectActiveTabId, selectActiveTabs } from '../sta
 import type { SessionView, SurfaceView, TabView } from '../state/types.js';
 import type { Tokens } from '../theme/tokens.js';
 import { useRunCommand, useServices, useWorkspace } from './context.js';
+import { Glyph, ICONS } from './Icon.js';
 
 export function TabStrip() {
   const { tokens, store } = useServices();
@@ -23,31 +27,66 @@ export function TabStrip() {
   const { commandContext } = useServices();
 
   const activate = (tab: TabView) => {
-    void commandContext.client.request('tab.set_active', { tab: tab.id }).catch(() => {
-      store.dispatch({ type: 'toast.push', text: 'Could not switch tab', kind: 'error' });
+    void commandContext.client.request('tab.set_active', { tab: tab.id }).catch((err: unknown) => {
+      store.dispatch({
+        type: 'toast.push',
+        text: `Could not switch tab: ${err instanceof Error ? err.message : String(err)}`,
+        kind: 'error',
+      });
     });
   };
+
+  if (vertical) {
+    return (
+      <div
+        testId="tab-strip"
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'stretch',
+          // No `gap`: rows carry `marginBottom` and the two together doubled
+          // the spacing.
+          flexGrow: 1,
+          minHeight: 0,
+          overflowY: 'scroll',
+          paddingLeft: tokens.strip.sidebarPadding,
+          paddingRight: tokens.strip.sidebarPadding,
+          paddingBottom: tokens.strip.sidebarPadding,
+        }}
+      >
+        <SessionChip session={session} tokens={tokens} vertical={vertical} />
+        {tabs.map((tab) => (
+          <Tab
+            key={tab.id}
+            tab={tab}
+            surface={surfaces[tab.surfaceId]}
+            active={tab.id === activeTabId}
+            confirming={confirmingCloseTabId === tab.id}
+            vertical={vertical}
+            tokens={tokens}
+            onActivate={() => activate(tab)}
+            onClose={() => run('tab.close', tab.id)}
+          />
+        ))}
+      </div>
+    );
+  }
 
   return (
     <div
       testId="tab-strip"
       style={{
         display: 'flex',
-        flexDirection: vertical ? 'column' : 'row',
-        alignItems: vertical ? 'stretch' : 'center',
+        flexDirection: 'row',
+        alignItems: 'center',
         gap: tokens.strip.gap,
-        ...(vertical
-          ? { width: tokens.strip.verticalWidth, height: '100%', padding: tokens.strip.paddingX }
-          : {
-              height: tokens.strip.height,
-              paddingLeft: tokens.strip.paddingX,
-              paddingRight: tokens.strip.paddingX,
-            }),
+        height: tokens.strip.height,
+        paddingLeft: tokens.strip.paddingX,
+        paddingRight: tokens.strip.paddingX,
         backgroundColor: tokens.bg.glass,
         borderColor: tokens.border.glass,
-        ...(vertical
-          ? { borderRightWidth: tokens.border.width }
-          : { borderBottomWidth: tokens.border.width }),
+        borderBottomWidth: tokens.border.width,
+        overflow: 'hidden',
       }}
     >
       <SessionChip session={session} tokens={tokens} vertical={vertical} />
@@ -64,7 +103,7 @@ export function TabStrip() {
           onClose={() => run('tab.close', tab.id)}
         />
       ))}
-      <NewTabButton tokens={tokens} vertical={vertical} onClick={() => run('tab.new')} />
+      <NewTabButton tokens={tokens} onClick={() => run('tab.new')} />
     </div>
   );
 }
@@ -103,10 +142,10 @@ export function SessionChip(props: {
         autoFocus
         value={draft ?? session.name}
         style={{
-          width: 140,
-          height: 22,
-          paddingLeft: 8,
-          paddingRight: 8,
+          width: props.vertical ? '100%' : tokens.strip.renameWidth,
+          height: tokens.strip.chipHeight,
+          paddingLeft: tokens.space.lg,
+          paddingRight: tokens.space.lg,
           borderRadius: tokens.radius.chip,
           backgroundColor: tokens.bg.glassActive,
           borderWidth: tokens.border.width,
@@ -126,21 +165,59 @@ export function SessionChip(props: {
     );
   }
 
+  if (props.vertical) {
+    // A section header, not a pill. `display: 'flex'` is load-bearing:
+    // without it `alignItems` is inert and the label sits at the TOP of the
+    // 24pt band.
+    return (
+      <div
+        testId="session-chip"
+        onClick={() => run('session.switch')}
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          height: tokens.strip.sectionHeaderHeight,
+          flexShrink: 0,
+          paddingLeft: tokens.strip.rowPaddingX,
+          paddingRight: tokens.strip.rowPaddingX,
+          marginTop: tokens.space.sm,
+          cursor: 'pointer',
+        }}
+      >
+        <text
+          style={{
+            color: tokens.fg.muted,
+            fontSize: tokens.strip.sidebarSectionLabel,
+            flexGrow: 1,
+            minWidth: 0,
+            overflow: 'hidden',
+            whiteSpace: 'nowrap',
+            textOverflow: 'ellipsis',
+          }}
+        >
+          {session.name}
+        </text>
+      </div>
+    );
+  }
+
   return (
     <div
       testId="session-chip"
       onClick={() => run('session.switch')}
       style={{
-        height: 22,
-        paddingLeft: 10,
-        paddingRight: 10,
-        borderRadius: tokens.radius.chip,
-        backgroundColor: tokens.bg.glass,
+        display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
+        height: tokens.strip.chipHeight,
+        flexShrink: 0,
+        paddingLeft: tokens.space.xl,
+        paddingRight: tokens.space.xl,
+        marginRight: tokens.space.sm,
+        borderRadius: tokens.radius.chip,
+        backgroundColor: tokens.bg.glass,
         cursor: 'pointer',
         hover: { backgroundColor: tokens.bg.glassHover },
-        ...(props.vertical ? { marginBottom: 6 } : { marginRight: 4 }),
       }}
     >
       <text style={{ color: tokens.fg.muted, fontSize: tokens.font.chip }}>{session.name}</text>
@@ -162,83 +239,157 @@ export function Tab(props: {
   const exited = surface?.status === 'exited';
   const title = surface?.title ?? 'shell';
   const badge = exited ? `⏻ ${surface?.exitSignal ?? surface?.exitCode ?? 0}` : null;
+  const selected = props.active;
 
   return (
+    // LAYOUT ONLY — no onClick here. gpuix fires an ancestor's onClick as
+    // well as the child's, so a nested × would close the tab AND activate
+    // the deleted id (`tab N does not exist`). Activate and close are
+    // siblings instead.
     <div
       testId={`tab-${props.tab.id}`}
-      onClick={props.onActivate}
       style={{
         display: 'flex',
         flexDirection: 'row',
         alignItems: 'center',
-        gap: 6,
         ...(props.vertical
-          ? { minHeight: tokens.strip.tabHeight, width: '100%' }
-          : { height: tokens.strip.tabHeight, maxWidth: tokens.strip.tabMaxWidth }),
-        paddingLeft: 10,
-        paddingRight: 8,
+          ? {
+              height: tokens.strip.rowHeight,
+              width: '100%',
+              flexShrink: 0,
+              marginBottom: tokens.space.xs,
+              paddingLeft: tokens.strip.rowPaddingX,
+              paddingRight: tokens.strip.rowPaddingX,
+            }
+          : {
+              height: tokens.strip.tabHeight,
+              minWidth: tokens.strip.tabMinWidth,
+              maxWidth: tokens.strip.tabMaxWidth,
+              flexShrink: 1,
+              paddingLeft: tokens.space.md,
+              paddingRight: tokens.space.lg,
+            }),
+        gap: tokens.space.sm,
+        overflow: 'hidden',
         borderRadius: tokens.radius.tab,
-        backgroundColor: props.active ? tokens.bg.glassActive : 'transparent',
+        // Always a 1px border (transparent when idle) so rows do not shift
+        // 1px sideways on activate.
+        borderWidth: tokens.border.width,
+        borderColor: selected ? tokens.border.glass : 'transparent',
+        backgroundColor: selected ? tokens.bg.glassActive : 'transparent',
         cursor: 'pointer',
-        hover: { backgroundColor: props.active ? tokens.bg.glassActive : tokens.bg.glassHover },
+        hover: { backgroundColor: selected ? tokens.bg.glassActive : tokens.bg.glassHover },
       }}
     >
-      {surface?.bell ? (
-        <text style={{ color: tokens.accent, fontSize: tokens.font.chrome }}>●</text>
-      ) : null}
-      <text
+      <div
+        testId={`tab-${props.tab.id}-activate`}
+        onClick={props.onActivate}
         style={{
-          color: exited ? tokens.fg.muted : tokens.fg.primary,
-          fontSize: tokens.font.chrome,
+          display: 'flex',
+          flexDirection: 'row',
+          alignItems: 'center',
           flexGrow: 1,
-          whiteSpace: props.vertical ? 'normal' : 'nowrap',
-          textOverflow: 'ellipsis',
-          ...(props.vertical ? { lineClamp: 2 } : {}),
+          // Repeat minWidth/overflow here: this is now the flex item the
+          // title shrinks inside.
+          minWidth: 0,
+          overflow: 'hidden',
+          gap: tokens.space.sm,
         }}
       >
-        {title}
-      </text>
-      {badge ? (
-        <text testId={`tab-${props.tab.id}-exited`} style={{ color: tokens.fg.muted, fontSize: tokens.font.chip }}>
-          {badge}
-        </text>
-      ) : null}
-      {props.confirming ? (
+        {surface?.bell ? (
+          <text
+            style={{
+              color: tokens.accent,
+              fontSize: tokens.font.chrome,
+              flexShrink: 0,
+            }}
+          >
+            ●
+          </text>
+        ) : null}
+        {props.vertical ? (
+          <div
+            style={{
+              width: tokens.strip.rowIcon,
+              height: tokens.strip.rowIcon,
+              flexShrink: 0,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              borderRadius: tokens.radius.chipSmall,
+              backgroundColor: selected ? tokens.bg.glassActive : tokens.bg.glassSubtle,
+            }}
+          >
+            <Glyph
+              glyph={ICONS.chevron}
+              size={tokens.font.chip}
+              color={selected ? tokens.accent : tokens.fg.muted}
+              box={tokens.strip.rowIcon}
+            />
+          </div>
+        ) : null}
         <text
-          testId={`tab-${props.tab.id}-confirm`}
-          style={{ color: tokens.fg.danger, fontSize: tokens.font.chip }}
+          style={{
+            color: exited ? tokens.fg.muted : tokens.fg.primary,
+            fontSize: tokens.font.chrome,
+            flexGrow: 1,
+            minWidth: 0,
+            overflow: 'hidden',
+            whiteSpace: 'nowrap',
+            textOverflow: 'ellipsis',
+          }}
         >
-          Close?
+          {title}
         </text>
-      ) : null}
+        {badge ? (
+          <text
+            testId={`tab-${props.tab.id}-exited`}
+            style={{ color: tokens.fg.muted, fontSize: tokens.font.chip, flexShrink: 0 }}
+          >
+            {badge}
+          </text>
+        ) : null}
+        {props.confirming ? (
+          <text
+            testId={`tab-${props.tab.id}-confirm`}
+            style={{ color: tokens.fg.danger, fontSize: tokens.font.chip, flexShrink: 0 }}
+          >
+            Close?
+          </text>
+        ) : null}
+      </div>
       <div
         testId={`tab-${props.tab.id}-close`}
         onClick={props.onClose}
         style={{
-          width: 16,
-          height: 16,
+          width: tokens.strip.rowIcon,
+          height: tokens.strip.rowIcon,
+          flexShrink: 0,
+          display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
-          borderRadius: 4,
+          borderRadius: tokens.radius.chipSmall,
           cursor: 'pointer',
           hover: { backgroundColor: tokens.bg.glassHover },
         }}
       >
-        <text style={{ color: tokens.fg.muted, fontSize: tokens.font.chip }}>✕</text>
+        <Glyph glyph={ICONS.close} size={tokens.font.chip} color={tokens.fg.muted} box={tokens.strip.rowIcon} />
       </div>
     </div>
   );
 }
 
-export function NewTabButton(props: { tokens: Tokens; vertical: boolean; onClick: () => void }) {
+export function NewTabButton(props: { tokens: Tokens; onClick: () => void }) {
   const { tokens } = props;
   return (
     <div
       testId="new-tab"
       onClick={props.onClick}
       style={{
-        width: props.vertical ? '100%' : 24,
-        height: 24,
+        width: tokens.strip.iconButton,
+        height: tokens.strip.iconButton,
+        flexShrink: 0,
+        display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
         borderRadius: tokens.radius.tab,
@@ -246,7 +397,7 @@ export function NewTabButton(props: { tokens: Tokens; vertical: boolean; onClick
         hover: { backgroundColor: tokens.bg.glassHover },
       }}
     >
-      <text style={{ color: tokens.fg.muted, fontSize: tokens.font.chrome }}>＋</text>
+      <Glyph glyph={ICONS.newTab} size={tokens.font.chrome} color={tokens.fg.muted} box={tokens.strip.iconButton} />
     </div>
   );
 }

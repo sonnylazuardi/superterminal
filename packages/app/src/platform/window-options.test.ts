@@ -63,7 +63,7 @@ describe('buildWindowOptions', () => {
       windowBackground: 'blurred',
       titlebarTransparent: true,
       trafficLightX: 18,
-      trafficLightY: 18,
+      trafficLightY: 13,
       focus: true,
     });
   });

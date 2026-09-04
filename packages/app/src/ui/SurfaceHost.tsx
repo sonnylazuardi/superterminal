@@ -20,6 +20,7 @@ import { useServices, useWorkspace } from './context.js';
 export function SurfaceHost() {
   const { tokens, registry, config, store, commandBus, socketPath } = useServices();
   const surface = useWorkspace(selectActiveSurface);
+  const paletteOpen = useWorkspace((s) => s.ui.paletteOpen);
   const command = useSyncExternalStore(
     commandBus.subscribe,
     commandBus.getSnapshot,
@@ -30,7 +31,12 @@ export function SurfaceHost() {
     return (
       <div
         testId="surface-host-empty"
-        style={{ flexGrow: 1, alignItems: 'center', justifyContent: 'center' }}
+        style={{
+          display: 'flex',
+          flexGrow: 1,
+          alignItems: 'center',
+          justifyContent: 'center',
+        }}
       >
         <text style={{ color: tokens.fg.muted, fontSize: tokens.font.chrome }}>No open tabs</text>
       </div>
@@ -50,6 +56,10 @@ export function SurfaceHost() {
         // never passes through JavaScript, so it needs the socket path, not a
         // handle to our control-plane client.
         socketPath={socketPath}
+        // Refocus the grid after a tab switch remounts it (`key`), so the
+        // focus chain is never empty and root shortcuts keep working without
+        // a click. Gated on the palette so its `<input>` can hold focus.
+        focused={!paletteOpen}
         {...(config.font.family ? { fontFamily: config.font.family } : {})}
         fontSize={config.font.size}
         lineHeight={config.font.lineHeight}
