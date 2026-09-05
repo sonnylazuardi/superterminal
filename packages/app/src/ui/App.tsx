@@ -39,7 +39,7 @@ import {
   useWorkspace,
   type AppServices,
 } from './context.js';
-import { ICONS, IconButton, sidebarIconInset } from './Icon.js';
+import { ICONS, Icon, IconButton, sidebarIconInset } from './Icon.js';
 import { SurfaceHost } from './SurfaceHost.js';
 import { TabStrip } from './TabStrip.js';
 import { WindowSizeTracker } from './WindowSizeTracker.js';
@@ -199,14 +199,14 @@ function SidebarHeader() {
     >
       <IconButton
         testId="sidebar-toggle"
-        glyph={ICONS.sidebar}
+        icon={ICONS.sidebar}
         tokens={tokens}
         onClick={() => run('view.toggleVerticalTabs')}
       />
       <div style={{ flexGrow: 1 }} />
       <IconButton
         testId="new-tab"
-        glyph={ICONS.newTab}
+        icon={ICONS.newTab}
         tokens={tokens}
         onClick={() => run('tab.new')}
       />
@@ -235,14 +235,14 @@ function SidebarFooter() {
     >
       <IconButton
         testId="sidebar-palette"
-        glyph={ICONS.palette}
+        icon={ICONS.palette}
         tokens={tokens}
         onClick={() => run('palette.commands')}
       />
       <div style={{ flexGrow: 1 }} />
       <IconButton
         testId="sidebar-new-session"
-        glyph={ICONS.newSession}
+        icon={ICONS.newSession}
         tokens={tokens}
         onClick={() => run('session.new')}
       />
@@ -280,7 +280,7 @@ function ContentHeader() {
           justifyContent: 'center',
         }}
       >
-        <text style={{ color: tokens.fg.muted, fontSize: tokens.font.chip }}>{ICONS.surface}</text>
+        <Icon name={ICONS.surface} size={tokens.icon.row} color={tokens.fg.muted} />
       </div>
       <text
         style={{
@@ -323,7 +323,7 @@ function TitleBar() {
     >
       <IconButton
         testId="sidebar-toggle"
-        glyph={ICONS.sidebar}
+        icon={ICONS.sidebar}
         tokens={tokens}
         onClick={() => run('view.toggleVerticalTabs')}
       />
@@ -342,7 +342,7 @@ function TitleBar() {
       </text>
       <IconButton
         testId="new-tab"
-        glyph={ICONS.newTab}
+        icon={ICONS.newTab}
         tokens={tokens}
         onClick={() => run('tab.new')}
       />

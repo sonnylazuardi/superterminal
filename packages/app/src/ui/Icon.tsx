@@ -1,52 +1,74 @@
 /**
- * Chrome icons.
+ * Chrome icons: Lucide (https://lucide.dev, ISC licence) rendered as SVG.
  *
  * Its own module rather than a helper inside `App.tsx`, because `App` imports
  * `TabStrip` — the reverse import would be a cycle.
  *
- * # Why glyphs are centred explicitly
+ * gpuix's `<svg source>` hands the markup to GPUI, which paints it as a mask
+ * tinted with the element's `color` — so one icon set serves every state
+ * (muted, accent, danger) and it scales crisply at any DPI, unlike the text
+ * glyphs the chrome used before (which shaped from whichever font covered
+ * the character and never sat on one baseline).
  *
- * `alignItems: 'center'` centres the text ELEMENT inside the button, not the
- * glyph inside its line box. A glyph whose font's ascent/descent are asymmetric
- * (or whose advance is wider than its ink) still sits high, low or off to one
- * side, which is exactly what the first pass looked like. So every icon gets a
- * deterministic box instead: `width: '100%'` + `textAlign: 'center'` fixes it
- * horizontally, and `lineHeight` equal to the button side fixes it vertically —
- * both are real gpuix style props (`style.rs` `text_align` / `line_height`).
- *
- * # Why these particular characters
- *
- * Chrome text renders in the system UI font, and a character it does not cover
- * is resolved through a fallback face with unrelated metrics — the reason the
- * first pass mixed a fullwidth `＋` (U+FF0B), dingbats (`❯` U+276F, `❏` U+274F)
- * and geometric shapes (`▤` U+25A4) and got four different visual baselines.
- * Everything below is ASCII, Latin-1 or common punctuation that SF Pro covers,
- * so they all shape from one face.
+ * The inner markup is copied verbatim from `lucide/icons/<name>.svg`; the
+ * wrapper below supplies Lucide's standard attributes (24-unit viewBox, 2px
+ * round stroke, no fill).
  */
 
 import type { Tokens } from '../theme/tokens.js';
 
+/** Inner markup of each Lucide icon, keyed by the name it has in Lucide. */
+const LUCIDE = {
+  'panel-left': '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/>',
+  plus: '<path d="M5 12h14"/><path d="M12 5v14"/>',
+  ellipsis:
+    '<circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/>',
+  'square-plus':
+    '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M8 12h8"/><path d="M12 8v8"/>',
+  'chevron-right': '<path d="m9 18 6-6-6-6"/>',
+  x: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
+  user: '<path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>',
+  terminal: '<path d="M12 19h8"/><path d="m4 17 6-6-6-6"/>',
+  'columns-2': '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M12 3v18"/>',
+} as const;
+
+export type LucideName = keyof typeof LUCIDE;
+
+/** What each chrome affordance uses. Change the icon here, not at the call site. */
 export const ICONS = {
   /** Toggle the sidebar / tab orientation. */
-  sidebar: '≡', // ≡ IDENTICAL TO
-  /** New tab. ASCII '+', not the fullwidth form. */
-  newTab: '+',
+  sidebar: 'panel-left',
+  /** New tab. */
+  newTab: 'plus',
   /** Command palette. */
-  palette: '⋯', // ⋯ MIDLINE HORIZONTAL ELLIPSIS
+  palette: 'ellipsis',
   /** New session. */
-  newSession: '□', // □ WHITE SQUARE
+  newSession: 'square-plus',
   /** Leading marker on a sidebar tab row. */
-  chevron: '›', // › SINGLE RIGHT-POINTING ANGLE QUOTATION MARK
-  /** Close a tab. Latin-1 multiplication sign, not a dingbat cross. */
-  close: '×', // ×
+  chevron: 'chevron-right',
+  /** Close a tab. */
+  close: 'x',
   /** The active Surface, in the content header. */
-  surface: '□', // □
-} as const;
+  surface: 'terminal',
+  /** The Session (a "profile"), beside its name. */
+  session: 'user',
+  /** A Tab with more than one Pane. */
+  panes: 'columns-2',
+} as const satisfies Record<string, LucideName>;
+
+/** Full SVG document for a Lucide icon; `currentColor` is tinted by GPUI. */
+export function lucideSvg(name: LucideName, strokeWidth = 2): string {
+  return (
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" ` +
+    `stroke="currentColor" stroke-width="${strokeWidth}" stroke-linecap="round" ` +
+    `stroke-linejoin="round">${LUCIDE[name]}</svg>`
+  );
+}
 
 /**
  * Left/right inset for the sidebar's header and footer icon buttons.
  *
- * Derived, not eyeballed, so the buttons' glyph centres land on the SAME
+ * Derived, not eyeballed, so the buttons' icon centres land on the SAME
  * vertical line as the tab rows' leading icons. A row's icon centre sits at
  * `sidebarPadding + rowPaddingX + rowIcon/2`; an icon button's centre sits at
  * `inset + iconButton/2`. Solving for `inset` gives the expression below —
@@ -60,43 +82,35 @@ export function sidebarIconInset(tokens: Tokens): number {
   );
 }
 
-export interface GlyphProps {
-  glyph: string;
-  /** Font size in px. */
+export interface IconProps {
+  name: LucideName;
+  /** Side of the square the icon is drawn in, px. */
   size: number;
   color: string;
-  /**
-   * Side of the square the glyph is centred in. Becomes `lineHeight`, which is
-   * what actually centres it vertically.
-   */
-  box: number;
+  /** Lucide's default is 2; thinner reads better at small sizes. */
+  strokeWidth?: number;
+  testId?: string;
 }
 
-export function Glyph(props: GlyphProps) {
+export function Icon(props: IconProps) {
   return (
-    <text
-      style={{
-        color: props.color,
-        fontSize: props.size,
-        width: '100%',
-        textAlign: 'center',
-        lineHeight: props.box,
-      }}
-    >
-      {props.glyph}
-    </text>
+    <svg
+      {...(props.testId ? { testId: props.testId } : {})}
+      source={lucideSvg(props.name, props.strokeWidth)}
+      style={{ width: props.size, height: props.size, flexShrink: 0, color: props.color }}
+    />
   );
 }
 
 export interface IconButtonProps {
   testId: string;
-  glyph: string;
+  icon: LucideName;
   tokens: Tokens;
   onClick: () => void;
-  /** Defaults to `tokens.strip.iconButton`. */
+  /** Button side; defaults to `tokens.strip.iconButton`. */
   size?: number;
-  /** Defaults to `tokens.font.chip`. */
-  fontSize?: number;
+  /** Icon side; defaults to `tokens.icon.button`. */
+  iconSize?: number;
   color?: string;
 }
 
@@ -111,8 +125,6 @@ export function IconButton(props: IconButtonProps) {
         width: size,
         height: size,
         flexShrink: 0,
-        // The glyph centres itself (see the module note); these keep the text
-        // element itself filling the button so `width: '100%'` means the button.
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
@@ -121,11 +133,10 @@ export function IconButton(props: IconButtonProps) {
         hover: { backgroundColor: tokens.bg.glassHover },
       }}
     >
-      <Glyph
-        glyph={props.glyph}
-        size={props.fontSize ?? tokens.font.chip}
+      <Icon
+        name={props.icon}
+        size={props.iconSize ?? tokens.icon.button}
         color={props.color ?? tokens.fg.muted}
-        box={size}
       />
     </div>
   );

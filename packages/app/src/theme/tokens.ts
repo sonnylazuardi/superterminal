@@ -22,6 +22,8 @@ export interface Tokens {
   accent: string;
   radius: { panel: number; tab: number; chip: number; chipSmall: number };
   font: { chrome: number; chip: number; paletteInput: number; family?: string };
+  /** Lucide icon sides, px (the drawn square, not the button around it). */
+  icon: { button: number; row: number; chip: number; section: number };
   space: { xs: number; sm: number; md: number; lg: number; xl: number };
   padding: { trafficLights: number };
   strip: {
@@ -60,17 +62,18 @@ const shared = {
   accent: '#7AA2F7',
   radius: { panel: 16, tab: 8, chip: 999, chipSmall: 6 },
   font: { chrome: 12.5, chip: 11.5, paletteInput: 14 },
+  icon: { button: 18, row: 16, chip: 13, section: 14 },
   space: SPACE,
   padding: { trafficLights: TRAFFIC_LIGHTS_RIGHT + SPACE.lg }, // 86
   strip: {
     height: 36,
     titleBarHeight: 38, // buttons sit y 13..27; 38 → symmetric band
     footerHeight: 32,
-    iconButton: 22,
+    iconButton: 28,
     sidebarPadding: 8,
     sidebarSectionLabel: 11,
     sectionHeaderHeight: 24,
-    rowIcon: 18,
+    rowIcon: 22,
     rowPaddingX: 8,
     rowHeight: 30,
     paletteInputHeight: 32,

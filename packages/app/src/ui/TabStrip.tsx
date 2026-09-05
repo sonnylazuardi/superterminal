@@ -14,7 +14,7 @@ import { focusedSurfaceOf } from '../state/layout.js';
 import type { SessionView, SurfaceView, TabView } from '../state/types.js';
 import type { Tokens } from '../theme/tokens.js';
 import { useRunCommand, useServices, useWorkspace } from './context.js';
-import { Glyph, ICONS } from './Icon.js';
+import { ICONS, Icon } from './Icon.js';
 import { displayTitle } from '../state/title.js';
 import { debug } from '../util/debug.js';
 
@@ -204,9 +204,11 @@ export function SessionChip(props: {
           paddingLeft: tokens.strip.rowPaddingX,
           paddingRight: tokens.strip.rowPaddingX,
           marginTop: tokens.space.sm,
+          gap: tokens.space.sm,
           cursor: 'pointer',
         }}
       >
+        <Icon name={ICONS.session} size={tokens.icon.section} color={tokens.fg.muted} />
         <text
           style={{
             color: tokens.fg.muted,
@@ -243,7 +245,10 @@ export function SessionChip(props: {
         hover: { backgroundColor: tokens.bg.glassHover },
       }}
     >
-      <text style={{ color: tokens.fg.muted, fontSize: tokens.font.chip }}>{session.name}</text>
+      <Icon name={ICONS.session} size={tokens.icon.chip} color={tokens.fg.muted} />
+      <text style={{ color: tokens.fg.muted, fontSize: tokens.font.chip, marginLeft: tokens.space.sm }}>
+        {session.name}
+      </text>
     </div>
   );
 }
@@ -353,11 +358,10 @@ export function Tab(props: {
               backgroundColor: selected ? tokens.bg.glassActive : tokens.bg.glassSubtle,
             }}
           >
-            <Glyph
-              glyph={ICONS.chevron}
-              size={tokens.font.chip}
+            <Icon
+              name={ICONS.chevron}
+              size={tokens.icon.chip}
               color={selected ? tokens.accent : tokens.fg.muted}
-              box={tokens.strip.rowIcon}
             />
           </div>
         ) : null}
@@ -375,14 +379,14 @@ export function Tab(props: {
           {title}
         </text>
         {paneCount > 1 ? (
-          // Pane count chip: `[2]` in the chip font, ASCII so it shapes from the
-          // UI face like every other glyph (see Icon.tsx).
-          <text
+          // Pane count: a split icon and the number.
+          <div
             testId={`tab-${props.tab.id}-panes`}
-            style={{ color: tokens.fg.muted, fontSize: tokens.font.chip, flexShrink: 0 }}
+            style={{ display: 'flex', alignItems: 'center', gap: tokens.space.xs, flexShrink: 0 }}
           >
-            {`[${paneCount}]`}
-          </text>
+            <Icon name={ICONS.panes} size={tokens.icon.chip} color={tokens.fg.muted} />
+            <text style={{ color: tokens.fg.muted, fontSize: tokens.font.chip }}>{String(paneCount)}</text>
+          </div>
         ) : null}
         {badge ? (
           <text
@@ -416,7 +420,7 @@ export function Tab(props: {
           hover: { backgroundColor: tokens.bg.glassHover },
         }}
       >
-        <Glyph glyph={ICONS.close} size={tokens.font.chip} color={tokens.fg.muted} box={tokens.strip.rowIcon} />
+        <Icon name={ICONS.close} size={tokens.icon.chip} color={tokens.fg.muted} />
       </div>
     </div>
   );
@@ -440,7 +444,7 @@ export function NewTabButton(props: { tokens: Tokens; onClick: () => void }) {
         hover: { backgroundColor: tokens.bg.glassHover },
       }}
     >
-      <Glyph glyph={ICONS.newTab} size={tokens.font.chrome} color={tokens.fg.muted} box={tokens.strip.iconButton} />
+      <Icon name={ICONS.newTab} size={tokens.icon.button} color={tokens.fg.muted} />
     </div>
   );
 }
