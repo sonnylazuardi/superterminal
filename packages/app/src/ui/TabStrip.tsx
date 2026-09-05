@@ -15,6 +15,7 @@ import type { SessionView, SurfaceView, TabView } from '../state/types.js';
 import type { Tokens } from '../theme/tokens.js';
 import { useRunCommand, useServices, useWorkspace } from './context.js';
 import { Glyph, ICONS } from './Icon.js';
+import { displayTitle } from '../state/title.js';
 import { debug } from '../util/debug.js';
 
 const menuLog = debug('st:menu');
@@ -264,7 +265,7 @@ export function Tab(props: {
 }) {
   const { tokens, surface } = props;
   const exited = surface?.status === 'exited';
-  const title = surface?.title ?? 'shell';
+  const title = displayTitle(surface?.title, 'shell');
   const badge = exited ? `⏻ ${surface?.exitSignal ?? surface?.exitCode ?? 0}` : null;
   const selected = props.active;
   const bell = props.bell ?? surface?.bell ?? false;

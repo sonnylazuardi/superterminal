@@ -25,6 +25,7 @@
 
 import type { KeyEventLike } from '../platform/keys.js';
 import { selectActiveSurface } from '../state/selectors.js';
+import { displayTitle } from '../state/title.js';
 import { debug } from '../util/debug.js';
 import { Banner, StatusToasts } from './Banner.js';
 import { CommandPalette } from './CommandPalette.js';
@@ -252,7 +253,7 @@ function SidebarFooter() {
 function ContentHeader() {
   const { tokens } = useServices();
   const surface = useWorkspace(selectActiveSurface);
-  const title = surface?.title && surface.title.length > 0 ? surface.title : 'superterminal';
+  const title = displayTitle(surface?.title, 'superterminal');
   return (
     <div
       testId="content-header"
@@ -302,7 +303,7 @@ function TitleBar() {
   const { tokens, platform } = useServices();
   const run = useRunCommand();
   const surface = useWorkspace(selectActiveSurface);
-  const title = surface?.title && surface.title.length > 0 ? surface.title : 'superterminal';
+  const title = displayTitle(surface?.title, 'superterminal');
   return (
     <div
       testId="titlebar"
