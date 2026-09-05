@@ -189,30 +189,47 @@ export function SessionChip(props: {
   }
 
   if (props.vertical) {
-    // A section header, not a pill. `display: 'flex'` is load-bearing:
-    // without it `alignItems` is inert and the label sits at the TOP of the
-    // 24pt band.
+    // The Session header is laid out exactly like a tab row — same height,
+    // paddings, icon box and font — so the person icon sits on the chevron
+    // column and the name reads at the same size as the tab titles. It is a
+    // button (opens the Session switcher), so it also gets the row hover.
+    // `display: 'flex'` is load-bearing: without it `alignItems` is inert.
     return (
       <div
         testId="session-chip"
         onClick={() => run('session.switch')}
         style={{
           display: 'flex',
+          flexDirection: 'row',
           alignItems: 'center',
-          height: tokens.strip.sectionHeaderHeight,
+          height: tokens.strip.rowHeight,
           flexShrink: 0,
           paddingLeft: tokens.strip.rowPaddingX,
           paddingRight: tokens.strip.rowPaddingX,
           marginTop: tokens.space.sm,
+          marginBottom: tokens.space.xs,
           gap: tokens.space.sm,
+          borderRadius: tokens.radius.tab,
           cursor: 'pointer',
+          hover: { backgroundColor: tokens.bg.glassHover },
         }}
       >
-        <Icon name={ICONS.session} size={tokens.icon.section} color={tokens.fg.muted} />
+        <div
+          style={{
+            width: tokens.strip.rowIcon,
+            height: tokens.strip.rowIcon,
+            flexShrink: 0,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+        >
+          <Icon name={ICONS.session} size={tokens.icon.row} color={tokens.fg.muted} />
+        </div>
         <text
           style={{
             color: tokens.fg.muted,
-            fontSize: tokens.strip.sidebarSectionLabel,
+            fontSize: tokens.font.chrome,
             flexGrow: 1,
             minWidth: 0,
             overflow: 'hidden',
