@@ -10,11 +10,14 @@ import {
   selectActiveSurface,
   selectActiveTab,
   selectActiveTabs,
+  selectFocusedSurfaceId,
   selectMountedSurfaceIds,
   selectRelativeTab,
   selectSessions,
+  selectSurfaceForTab,
   selectTabAt,
   selectTabIndex,
+  selectTabSurfaces,
 } from './selectors.js';
 import type { WorkspaceState } from './types.js';
 
@@ -62,6 +65,45 @@ function seeded(): WorkspaceState {
   return applyServerEvent(initialWorkspaceState, snapshotEvent(snapshot()));
 }
 
+/** Tab 10 split: [100 | [102 / 103]] — a row whose second child is a column. */
+const SPLIT_LAYOUT = {
+  kind: 'split' as const,
+  axis: 'row' as const,
+  ratio: 0.5,
+  first: { kind: 'leaf' as const, surface: 100 },
+  second: {
+    kind: 'split' as const,
+    axis: 'column' as const,
+    ratio: 0.3,
+    first: { kind: 'leaf' as const, surface: 102 },
+    second: { kind: 'leaf' as const, surface: 103 },
+  },
+};
+
+function splitSnapshot(over: Partial<WorkspaceSnapshot> = {}): WorkspaceSnapshot {
+  return {
+    workspace: workspace({
+      sessions: [
+        {
+          id: 1,
+          name: 'Default',
+          active_tab: 10,
+          tabs: [
+            { id: 10, surface: 100, layout: SPLIT_LAYOUT },
+            { id: 11, surface: 101 },
+          ],
+        },
+      ],
+    }),
+    surfaces: [surface(100), surface(101), surface(102), surface(103)],
+    ...over,
+  };
+}
+
+function split(): WorkspaceState {
+  return applyServerEvent(initialWorkspaceState, snapshotEvent(splitSnapshot()));
+}
+
 /* --------------------------------------------------------------- snapshot -- */
 
 describe('applyServerEvent — snapshot', () => {
@@ -72,7 +114,13 @@ describe('applyServerEvent — snapshot', () => {
     expect(s.sessions[1]).toEqual({ id: 1, name: 'Default', tabIds: [10, 11] });
     expect(s.activeSessionId).toBe(1);
     expect(s.activeTabBySession[1]).toBe(10);
-    expect(s.tabs[11]).toEqual({ id: 11, sessionId: 1, surfaceId: 101 });
+    expect(s.tabs[11]).toEqual({
+      id: 11,
+      sessionId: 1,
+      surfaceId: 101,
+      layout: { kind: 'leaf', surface: 101 },
+      surfaceIds: [101],
+    });
     expect(s.surfaces[100]).toMatchObject({
       id: 100,
       title: 'surface-100',
@@ -173,6 +221,81 @@ describe('applyServerEvent — snapshot', () => {
       }),
     );
     expect(s.ui.renamingSessionId).toBeNull();
+  });
+
+  test('a split Tab projects its Pane tree and leaves in order', () => {
+    const s = split();
+    expect(s.tabs[10]!.layout).toEqual(SPLIT_LAYOUT);
+    expect(s.tabs[10]!.surfaceIds).toEqual([100, 102, 103]);
+    expect(s.tabs[10]!.surfaceId).toBe(100);
+    // A 1.0 daemon sends no layout: a single leaf is implied.
+    expect(s.tabs[11]!.layout).toEqual({ kind: 'leaf', surface: 101 });
+  });
+
+  test('a focused Pane that closes drops out; the first Pane takes over', () => {
+    const s = applyUiAction(split(), { type: 'pane.focus', tabId: 10, surfaceId: 103 });
+    expect(selectActiveSurface(s)!.id).toBe(103);
+    const collapsed = applyServerEvent(s, {
+      t: 'ev.workspace',
+      revision: 2,
+      workspace: workspace({
+        revision: 2,
+        sessions: [
+          {
+            id: 1,
+            name: 'Default',
+            active_tab: 10,
+            tabs: [
+              {
+                id: 10,
+                surface: 100,
+                layout: {
+                  kind: 'split',
+                  axis: 'row',
+                  ratio: 0.5,
+                  first: { kind: 'leaf', surface: 100 },
+                  second: { kind: 'leaf', surface: 102 },
+                },
+              },
+              { id: 11, surface: 101 },
+            ],
+          },
+        ],
+      }),
+      surfaces: [surface(100), surface(101), surface(102)],
+    });
+    expect(collapsed.ui.focusedPaneByTab[10]).toBeUndefined();
+    expect(selectActiveSurface(collapsed)!.id).toBe(100);
+    // A surviving focus is kept, and the ui object is not churned for nothing.
+    const kept = applyUiAction(split(), { type: 'pane.focus', tabId: 10, surfaceId: 102 });
+    const again = applyServerEvent(kept, {
+      t: 'ev.workspace',
+      revision: 2,
+      workspace: splitSnapshot().workspace,
+      surfaces: splitSnapshot().surfaces,
+    });
+    expect(again.ui).toBe(kept.ui);
+  });
+
+  test('a removed tab closes its Menu and drops its ratio preview', () => {
+    let s = applyUiAction(split(), { type: 'menu.open', tabId: 10, x: 5, y: 6 });
+    s = applyUiAction(s, { type: 'ratio.preview', tabId: 10, path: [], ratio: 0.4 });
+    expect(s.ui.menu).toEqual({ tabId: 10, x: 5, y: 6, index: 0 });
+    const after = applyServerEvent(s, snapshotEvent(snapshot()));
+    // Tab 10 still exists in the plain snapshot: nothing pruned.
+    expect(after.ui.menu).not.toBeNull();
+    const gone = applyServerEvent(
+      s,
+      snapshotEvent(
+        snapshot({
+          workspace: workspace({
+            sessions: [{ id: 1, name: 'Default', active_tab: 11, tabs: [{ id: 11, surface: 101 }] }],
+          }),
+        }),
+      ),
+    );
+    expect(gone.ui.menu).toBeNull();
+    expect(gone.ui.ratioPreview).toBeNull();
   });
 
   test('a removed tab clears the close confirmation', () => {
@@ -411,6 +534,52 @@ describe('applyUiAction', () => {
     expect(applyUiAction(s, { type: 'surface.bell', surfaceId: 999 })).toBe(s);
   });
 
+  test('sidebar width is clamped and recorded once', () => {
+    const s = applyUiAction(seeded(), { type: 'ui.setSidebarWidth', width: 300 });
+    expect(s.ui.sidebarWidth).toBe(300);
+    expect(applyUiAction(s, { type: 'ui.setSidebarWidth', width: 300 })).toBe(s);
+    expect(applyUiAction(s, { type: 'ui.setSidebarWidth', width: 10 }).ui.sidebarWidth).toBe(160);
+    expect(applyUiAction(s, { type: 'ui.setSidebarWidth', width: 9999 }).ui.sidebarWidth).toBe(480);
+    expect(applyUiAction(s, { type: 'ui.setSidebarWidth', width: Number.NaN }).ui.sidebarWidth).toBe(160);
+  });
+
+  test('pane.focus needs an existing tab and is idempotent', () => {
+    const s = split();
+    expect(applyUiAction(s, { type: 'pane.focus', tabId: 404, surfaceId: 100 })).toBe(s);
+    const focused = applyUiAction(s, { type: 'pane.focus', tabId: 10, surfaceId: 102 });
+    expect(focused.ui.focusedPaneByTab).toEqual({ 10: 102 });
+    expect(applyUiAction(focused, { type: 'pane.focus', tabId: 10, surfaceId: 102 })).toBe(focused);
+  });
+
+  test('menu open/move/close', () => {
+    const s = split();
+    expect(applyUiAction(s, { type: 'menu.open', tabId: 404, x: 0, y: 0 })).toBe(s);
+    let m = applyUiAction(s, { type: 'menu.open', tabId: 10, x: 40, y: 50 });
+    expect(m.ui.menu).toEqual({ tabId: 10, x: 40, y: 50, index: 0 });
+    m = applyUiAction(m, { type: 'menu.move', delta: -1, count: 4 });
+    expect(m.ui.menu!.index).toBe(3);
+    m = applyUiAction(m, { type: 'menu.move', delta: 1, count: 4 });
+    expect(m.ui.menu!.index).toBe(0);
+    expect(applyUiAction(m, { type: 'menu.move', delta: 1, count: 0 })).toBe(m);
+    const closed = applyUiAction(m, { type: 'menu.close' });
+    expect(closed.ui.menu).toBeNull();
+    expect(applyUiAction(closed, { type: 'menu.close' })).toBe(closed);
+    expect(applyUiAction(closed, { type: 'menu.move', delta: 1, count: 4 })).toBe(closed);
+  });
+
+  test('ratio preview clamps, dedupes and clears', () => {
+    const s = split();
+    expect(applyUiAction(s, { type: 'ratio.preview', tabId: 404, path: [], ratio: 0.4 })).toBe(s);
+    const p = applyUiAction(s, { type: 'ratio.preview', tabId: 10, path: [1], ratio: 0.99 });
+    expect(p.ui.ratioPreview).toEqual({ tabId: 10, path: [1], ratio: 0.9 });
+    expect(applyUiAction(p, { type: 'ratio.preview', tabId: 10, path: [1], ratio: 0.95 })).toBe(p);
+    const moved = applyUiAction(p, { type: 'ratio.preview', tabId: 10, path: [], ratio: 0.5 });
+    expect(moved.ui.ratioPreview).toEqual({ tabId: 10, path: [], ratio: 0.5 });
+    const cleared = applyUiAction(moved, { type: 'ratio.clear' });
+    expect(cleared.ui.ratioPreview).toBeNull();
+    expect(applyUiAction(cleared, { type: 'ratio.clear' })).toBe(cleared);
+  });
+
   test('window resize is recorded once', () => {
     const s = applyUiAction(seeded(), { type: 'window.resize', width: 1200, height: 800 });
     expect(s.ui.window).toEqual({ width: 1200, height: 800 });
@@ -472,10 +641,25 @@ describe('selectors', () => {
     expect(selectActiveTabs(next)).not.toBe(selectActiveTabs(s));
   });
 
-  test('Q44: exactly one surface is mounted', () => {
+  test('Q44 as amended by ADR 0009: every Pane of the visible Tab is mounted', () => {
     const s = seeded();
     expect(selectMountedSurfaceIds(s)).toEqual([100]);
     expect(selectMountedSurfaceIds(initialWorkspaceState)).toEqual([]);
+    expect(selectMountedSurfaceIds(split())).toEqual([100, 102, 103]);
+  });
+
+  test('the active Surface is the focused Pane, falling back to the first', () => {
+    const s = split();
+    expect(selectActiveSurface(s)!.id).toBe(100);
+    expect(selectFocusedSurfaceId(s, 10)).toBe(100);
+    const focused = applyUiAction(s, { type: 'pane.focus', tabId: 10, surfaceId: 103 });
+    expect(selectActiveSurface(focused)!.id).toBe(103);
+    expect(selectSurfaceForTab(focused, 10)!.id).toBe(103);
+    expect(selectTabSurfaces(focused, 10).map((x) => x.id)).toEqual([100, 102, 103]);
+    // A focus request for a Pane the Tab does not (yet) hold falls back.
+    const bogus = applyUiAction(s, { type: 'pane.focus', tabId: 10, surfaceId: 999 });
+    expect(selectActiveSurface(bogus)!.id).toBe(100);
+    expect(selectFocusedSurfaceId(s, 404)).toBeNull();
   });
 
   test('relative tab wraps', () => {

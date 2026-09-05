@@ -1,12 +1,14 @@
 import type {
   Ev,
+  Layout,
   SessionId,
+  SplitPath,
   SurfaceId,
   TabId,
   WorkspaceSnapshot,
 } from '@superterminal/protocol-ts';
 
-export type { SessionId, SurfaceId, TabId };
+export type { Layout, SessionId, SplitPath, SurfaceId, TabId };
 
 export type ConnectionStatus =
   | 'connecting'
@@ -32,7 +34,12 @@ export interface SessionView {
 export interface TabView {
   id: TabId;
   sessionId: SessionId;
+  /** The first Pane's Surface (`Tab.surface` on the wire). */
   surfaceId: SurfaceId;
+  /** The Pane tree (ADR 0009); a 1.0 daemon implies a single leaf. */
+  layout: Layout;
+  /** Every Pane's Surface in tree order — `layoutLeaves(layout)`. */
+  surfaceIds: SurfaceId[];
 }
 
 export type SurfaceStatus = 'starting' | 'running' | 'exited';
@@ -61,12 +68,33 @@ export interface Toast {
   kind: 'info' | 'error';
 }
 
+/** A right-click Menu on a tab row, opened at the pointer (window px). */
+export interface MenuState {
+  tabId: TabId;
+  x: number;
+  y: number;
+  index: number;
+}
+
+/** Local live preview of a Split's ratio while its divider is dragged. */
+export interface RatioPreview {
+  tabId: TabId;
+  path: SplitPath;
+  ratio: number;
+}
+
 export interface UiState {
   paletteOpen: boolean;
   paletteMode: PaletteMode;
   paletteQuery: string;
   paletteIndex: number;
   verticalTabs: boolean;
+  /** Sidebar column width in logical px (Client State). */
+  sidebarWidth: number;
+  /** The focused Pane per Tab; a Tab absent here focuses its first Pane. */
+  focusedPaneByTab: Record<TabId, SurfaceId>;
+  menu: MenuState | null;
+  ratioPreview: RatioPreview | null;
   renamingSessionId: SessionId | null;
   /** Tab awaiting a "really close? something is running" confirmation. */
   confirmingCloseTabId: TabId | null;
@@ -104,6 +132,13 @@ export type UiAction =
   | { type: 'palette.setIndex'; index: number }
   | { type: 'ui.toggleVerticalTabs' }
   | { type: 'ui.setVerticalTabs'; value: boolean }
+  | { type: 'ui.setSidebarWidth'; width: number }
+  | { type: 'pane.focus'; tabId: TabId; surfaceId: SurfaceId }
+  | { type: 'menu.open'; tabId: TabId; x: number; y: number }
+  | { type: 'menu.close' }
+  | { type: 'menu.move'; delta: number; count: number }
+  | { type: 'ratio.preview'; tabId: TabId; path: SplitPath; ratio: number }
+  | { type: 'ratio.clear' }
   | { type: 'session.beginRename'; sessionId: SessionId }
   | { type: 'session.endRename' }
   | { type: 'tab.confirmClose'; tabId: TabId | null }

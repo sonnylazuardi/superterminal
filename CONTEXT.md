@@ -25,12 +25,20 @@ A named, ordered group of Tabs (e.g. "Demo", "Work"). Exactly one Session is act
 _Avoid_: workspace (for this level), project, group
 
 **Tab**:
-An ordered slot inside a Session that holds exactly one Surface and is shown in the tab strip.
-_Avoid_: window, pane
+An ordered slot inside a Session shown in the tab strip. It holds one or more Panes arranged by Splits; a fresh Tab is a single Pane.
+_Avoid_: window, pane (a Pane is a part of a Tab, not a Tab)
+
+**Pane**:
+One rectangular region of a Tab showing exactly one Surface. Every Tab has at least one; the Pane that has the keyboard is the focused Pane.
+_Avoid_: split (that is the act), panel, view, cell
+
+**Split**:
+Dividing a Pane in two, seeding the new Pane with a fresh Surface. The two Splits are named by where the new Pane goes: **Split Right** puts it beside the original, **Split Down** puts it below. A Tab's layout is a tree of Splits whose leaves are Panes; closing a Pane collapses its Split into the surviving sibling. Splits belong to the Workspace and survive the Client closing.
+_Avoid_: pane (the result), tile, frame, vertical/horizontal split (they mean opposite things in iTerm and tmux)
 
 **Surface**:
 One running program attached to a pseudo‑terminal together with its authoritative terminal state (screen, scrollback, cursor, modes, title). Surfaces belong to the Server.
-_Avoid_: terminal, pty, buffer, shell, pane
+_Avoid_: terminal, pty, buffer, shell, pane (a Pane shows a Surface; it is not one)
 
 ### Replication
 
@@ -57,8 +65,16 @@ _Avoid_: scrollback (acceptable in UI copy only), backlog
 ### Interaction
 
 **View State**:
-The per‑Surface, user‑visible position and selection (scroll offset, selected range) that survives Client relaunch.
+The per‑Surface, user‑visible position and selection (scroll offset, selected range) that survives Client relaunch. Owned by the Server.
 _Avoid_: viewport, UI state
+
+**Config**:
+What the user has declared they want, written by hand in the configuration file (font, shell, keybindings, initial window size, initial tab layout). Read at start‑up; never written by the program.
+_Avoid_: settings, preferences (both blur the line with Client State)
+
+**Client State**:
+What one Client on one machine remembers from its last run without the user declaring it: the last window size, the Tab Layout (sidebar or strip) and the sidebar width. Client State wins over Config when both say something about the same thing; Config only seeds the first run. It is not part of the Workspace and is never sent to the Server.
+_Avoid_: settings, preferences, window state, ui state, cache
 
 **Control Plane**:
 The human‑readable channel between Client and Server for managing the Workspace (create Tab, rename Session, …).
@@ -67,6 +83,18 @@ _Avoid_: API, RPC, management channel
 **Data Plane**:
 The compact channel between Client and Server carrying Snapshots, Deltas, History and input bytes.
 _Avoid_: stream, hot path (in prose)
+
+**Tab Layout**:
+Where the tab strip lives: a **sidebar** down the left edge (the default) or a **strip** along the top. Toggled at runtime; remembered as Client State.
+_Avoid_: vertical/horizontal tabs (acceptable in UI copy and code identifiers only), orientation
+
+**Dialog**:
+A floating panel that takes the keyboard while open (the Command Palette, the Session switcher). Every Dialog opens at the top centre of the window.
+_Avoid_: modal (there is no modal state; Esc always dismisses), popup, overlay (the paint layer, not the concept)
+
+**Menu**:
+A floating list of Commands opened at the pointer by a right‑click (e.g. on a Tab). Like a Dialog it takes the keyboard while open — arrows move, Enter runs, Esc or a click elsewhere closes — but it opens where it was invoked, not at the top centre.
+_Avoid_: context menu (acceptable in UI copy only), popup, dropdown
 
 **Command**:
 A named, user‑invocable action with an optional shortcut, shown in the Command Palette (e.g. "New Tab").

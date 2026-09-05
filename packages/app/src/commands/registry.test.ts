@@ -1,5 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import type { ReqParams, RequestType, WorkspaceSnapshot } from '@superterminal/protocol-ts';
+import { resolveBinding } from '../platform/keys.js';
+import type { WorkspaceState } from '../state/types.js';
 import { createWorkspaceStore, type WorkspaceStore } from '../state/workspace-store.js';
 import { buildRegistry, filterCommands, fuzzyScore, matchKeybinding } from './registry.js';
 import type { CommandContext, ControlClientLike, NativeBridge } from './types.js';
@@ -36,21 +38,56 @@ const snapshot: WorkspaceSnapshot = {
   })),
 };
 
+/** The fixture with Tab 10 split into [100 | 102] (ADR 0009). */
+const splitSnapshot: WorkspaceSnapshot = {
+  workspace: {
+    ...snapshot.workspace,
+    sessions: [
+      {
+        ...snapshot.workspace.sessions[0]!,
+        tabs: [
+          {
+            id: 10,
+            surface: 100,
+            layout: {
+              kind: 'split',
+              axis: 'row',
+              ratio: 0.5,
+              first: { kind: 'leaf', surface: 100 },
+              second: { kind: 'leaf', surface: 102 },
+            },
+          },
+          { id: 11, surface: 101 },
+        ],
+      },
+    ],
+  },
+  surfaces: [...snapshot.surfaces, { ...snapshot.surfaces[0]!, id: 102, title: 's102', cwd: '/tmp' }],
+};
+
+function split(many: boolean): WorkspaceState {
+  const store = createWorkspaceStore();
+  store.applySnapshot(many ? splitSnapshot : snapshot);
+  store.dispatch({ type: 'connection.set', status: 'connected' });
+  return store.getState();
+}
+
 interface Sent {
   type: RequestType;
   params: unknown;
 }
 
-function harness(over: { native?: Partial<NativeBridge> } = {}) {
+function harness(over: { native?: Partial<NativeBridge>; split?: boolean } = {}) {
   const sent: Sent[] = [];
   const store: WorkspaceStore = createWorkspaceStore();
-  store.applySnapshot(snapshot);
+  store.applySnapshot(over.split ? splitSnapshot : snapshot);
   store.dispatch({ type: 'connection.set', status: 'connected' });
   const client: ControlClientLike = {
     state: 'connected',
     async request<M extends RequestType>(type: M, params: ReqParams<M>) {
       sent.push({ type, params });
       if (type === 'session.create') return { session: 2, revision: 2 } as never;
+      if (type === 'tab.split') return { tab: 10, surface: 777, revision: 2 } as never;
       return { revision: 2 } as never;
     },
   };
@@ -86,6 +123,11 @@ describe('registry composition', () => {
     expect(registry.commands.map((c) => c.id)).toEqual([
       'tab.new',
       'tab.close',
+      'pane.splitRight',
+      'pane.splitDown',
+      'pane.close',
+      'pane.focusNext',
+      'pane.focusPrev',
       'tab.next',
       'tab.prev',
       'tab.goto',
@@ -152,6 +194,115 @@ describe('platform-aware modifiers', () => {
   test('tab.goto is ⌘1 on macOS and Alt+1 on Linux', () => {
     expect(buildRegistry({ platform: 'darwin' }).shortcutHint('tab.goto')).toBe('⌘1');
     expect(buildRegistry({ platform: 'linux' }).shortcutHint('tab.goto')).toBe('Alt+1');
+  });
+});
+
+describe('pane commands (ADR 0009)', () => {
+  test('bindings are spelled per platform so mod+shift does not collapse onto mod', () => {
+    const mac = buildRegistry({ platform: 'darwin' });
+    const linux = buildRegistry({ platform: 'linux' });
+    expect(mac.shortcutHint('pane.splitRight')).toBe('⌘D');
+    expect(mac.shortcutHint('pane.splitDown')).toBe('⇧⌘D');
+    expect(mac.shortcutHint('pane.close')).toBe('⇧⌘W');
+    expect(linux.shortcutHint('pane.splitRight')).toBe('Ctrl+Shift+D');
+    expect(linux.shortcutHint('pane.splitDown')).toBe('Alt+Shift+D');
+    expect(linux.shortcutHint('pane.close')).toBe('Alt+Shift+W');
+    expect(linux.shortcutHint('pane.focusNext')).toBe('Alt+]');
+  });
+
+  test('no two commands share a keystroke on either platform', () => {
+    for (const platform of ['darwin', 'linux'] as const) {
+      const registry = buildRegistry({ platform });
+      const seen = new Map<string, string>();
+      for (const command of registry.commands) {
+        for (const binding of command.shortcut) {
+          const key = JSON.stringify(resolveBinding(binding, platform));
+          expect(seen.get(key) ?? command.id).toBe(command.id);
+          seen.set(key, command.id);
+        }
+      }
+    }
+  });
+
+  test('Split Right/Down split the focused Pane, spawn in its cwd, then focus the new Pane', async () => {
+    const { ctx, sent, store } = harness({ split: true });
+    store.dispatch({ type: 'pane.focus', tabId: 10, surfaceId: 102 });
+    const registry = buildRegistry({ platform: 'linux' });
+    await registry.run('pane.splitRight', ctx);
+    expect(sent[0]).toEqual({
+      type: 'tab.split',
+      params: { tab: 10, pane: 102, axis: 'row', spawn: { cwd: '/tmp', cols: 200, rows: 60 } },
+    });
+    expect(store.getState().ui.focusedPaneByTab[10]).toBe(777);
+    await registry.run('pane.splitDown', ctx, 11);
+    expect(sent[1]).toEqual({
+      type: 'tab.split',
+      params: {
+        tab: 11,
+        pane: 101,
+        axis: 'column',
+        spawn: { cwd: '/home/sonny/projects', cols: 200, rows: 60 },
+      },
+    });
+  });
+
+  test('Close Pane on a split Tab closes the focused Pane and focuses its sibling', async () => {
+    const { ctx, sent, store } = harness({ split: true });
+    const registry = buildRegistry({ platform: 'linux' });
+    await registry.run('pane.close', ctx);
+    expect(sent).toEqual([{ type: 'pane.close', params: { tab: 10, pane: 100 } }]);
+    expect(store.getState().ui.focusedPaneByTab[10]).toBe(102);
+  });
+
+  test('Close Pane on a single-Pane Tab is Close Tab, confirmation included', async () => {
+    const { ctx, sent, store } = harness();
+    const registry = buildRegistry({ platform: 'linux' });
+    await registry.run('pane.close', ctx);
+    expect(sent).toEqual([{ type: 'tab.close', params: { tab: 10 } }]);
+    // Busy Pane: first run asks, second run closes.
+    store.applySnapshot({
+      ...snapshot,
+      surfaces: snapshot.surfaces.map((s) => (s.id === 100 ? { ...s, has_foreground_child: true } : s)),
+    });
+    await registry.run('pane.close', ctx);
+    expect(store.getState().ui.confirmingCloseTabId).toBe(10);
+    expect(sent).toHaveLength(1);
+    await registry.run('pane.close', ctx);
+    expect(sent).toHaveLength(2);
+    expect(store.getState().ui.confirmingCloseTabId).toBeNull();
+  });
+
+  test('Close Tab confirms when ANY Pane has a foreground child', async () => {
+    const { ctx, sent, store } = harness({ split: true });
+    store.applySnapshot({
+      ...splitSnapshot,
+      surfaces: splitSnapshot.surfaces.map((s) => (s.id === 102 ? { ...s, has_foreground_child: true } : s)),
+    });
+    const registry = buildRegistry({ platform: 'linux' });
+    await registry.run('tab.close', ctx);
+    expect(sent).toHaveLength(0);
+    expect(store.getState().ui.confirmingCloseTabId).toBe(10);
+  });
+
+  test('Focus Next/Previous Pane cycle the Panes in tree order', async () => {
+    const { ctx, store } = harness({ split: true });
+    const registry = buildRegistry({ platform: 'linux' });
+    await registry.run('pane.focusNext', ctx);
+    expect(store.getState().ui.focusedPaneByTab[10]).toBe(102);
+    await registry.run('pane.focusNext', ctx);
+    expect(store.getState().ui.focusedPaneByTab[10]).toBe(100);
+    await registry.run('pane.focusPrev', ctx);
+    expect(store.getState().ui.focusedPaneByTab[10]).toBe(102);
+  });
+
+  test('focus cycling is enabled only for a split Tab', () => {
+    const registry = buildRegistry({ platform: 'linux' });
+    const one = split(false);
+    const many = split(true);
+    expect(registry.isEnabled(registry.byId('pane.focusNext')!, one)).toBe(false);
+    expect(registry.isEnabled(registry.byId('pane.focusNext')!, many)).toBe(true);
+    expect(registry.isEnabled(registry.byId('pane.splitRight')!, one)).toBe(true);
+    expect(registry.isEnabled(registry.byId('pane.close')!, one)).toBe(true);
   });
 });
 

@@ -10,10 +10,14 @@
 
 import { useState } from 'react';
 import { selectActiveSession, selectActiveTabId, selectActiveTabs } from '../state/selectors.js';
+import { focusedSurfaceOf } from '../state/layout.js';
 import type { SessionView, SurfaceView, TabView } from '../state/types.js';
 import type { Tokens } from '../theme/tokens.js';
 import { useRunCommand, useServices, useWorkspace } from './context.js';
 import { Glyph, ICONS } from './Icon.js';
+import { debug } from '../util/debug.js';
+
+const menuLog = debug('st:menu');
 
 export function TabStrip() {
   const { tokens, store } = useServices();
@@ -22,9 +26,23 @@ export function TabStrip() {
   const activeTabId = useWorkspace(selectActiveTabId);
   const session = useWorkspace(selectActiveSession);
   const surfaces = useWorkspace((s) => s.surfaces);
+  const focusedPaneByTab = useWorkspace((s) => s.ui.focusedPaneByTab);
   const confirmingCloseTabId = useWorkspace((s) => s.ui.confirmingCloseTabId);
   const run = useRunCommand();
   const { commandContext } = useServices();
+
+  /** The row's Surface is the focused Pane's; bell lights for any Pane. */
+  const rowSurface = (tab: TabView): SurfaceView | undefined =>
+    surfaces[focusedSurfaceOf(tab, focusedPaneByTab[tab.id])];
+  const anyBell = (tab: TabView): boolean => tab.surfaceIds.some((id) => surfaces[id]?.bell);
+  const openMenu = (
+    tab: TabView,
+    event: { x?: number; y?: number; isRightClick?: boolean; button?: number },
+  ) => {
+    menuLog('auxClick tab', tab.id, 'right', event.isRightClick, 'at', event.x, event.y);
+    if (!(event.isRightClick || event.button === 2)) return;
+    store.dispatch({ type: 'menu.open', tabId: tab.id, x: event.x ?? 0, y: event.y ?? 0 });
+  };
 
   const activate = (tab: TabView) => {
     void commandContext.client.request('tab.set_active', { tab: tab.id }).catch((err: unknown) => {
@@ -59,13 +77,15 @@ export function TabStrip() {
           <Tab
             key={tab.id}
             tab={tab}
-            surface={surfaces[tab.surfaceId]}
+            surface={rowSurface(tab)}
+            bell={anyBell(tab)}
             active={tab.id === activeTabId}
             confirming={confirmingCloseTabId === tab.id}
             vertical={vertical}
             tokens={tokens}
             onActivate={() => activate(tab)}
             onClose={() => run('tab.close', tab.id)}
+            onAuxClick={(event) => openMenu(tab, event)}
           />
         ))}
       </div>
@@ -94,13 +114,15 @@ export function TabStrip() {
         <Tab
           key={tab.id}
           tab={tab}
-          surface={surfaces[tab.surfaceId]}
+          surface={rowSurface(tab)}
+          bell={anyBell(tab)}
           active={tab.id === activeTabId}
           confirming={confirmingCloseTabId === tab.id}
           vertical={vertical}
           tokens={tokens}
           onActivate={() => activate(tab)}
           onClose={() => run('tab.close', tab.id)}
+          onAuxClick={(event) => openMenu(tab, event)}
         />
       ))}
       <NewTabButton tokens={tokens} onClick={() => run('tab.new')} />
@@ -227,19 +249,26 @@ export function SessionChip(props: {
 
 export function Tab(props: {
   tab: TabView;
+  /** The focused Pane's Surface — the one whose title the row shows. */
   surface: SurfaceView | undefined;
+  /** Any Pane of the Tab rang. Defaults to the row Surface's own bell. */
+  bell?: boolean;
   active: boolean;
   confirming: boolean;
   vertical: boolean;
   tokens: Tokens;
   onActivate: () => void;
   onClose: () => void;
+  /** Right-click (gpuix `auxClick`): opens the tab Menu at the pointer. */
+  onAuxClick?: (event: { x?: number; y?: number; isRightClick?: boolean; button?: number }) => void;
 }) {
   const { tokens, surface } = props;
   const exited = surface?.status === 'exited';
   const title = surface?.title ?? 'shell';
   const badge = exited ? `⏻ ${surface?.exitSignal ?? surface?.exitCode ?? 0}` : null;
   const selected = props.active;
+  const bell = props.bell ?? surface?.bell ?? false;
+  const paneCount = props.tab.surfaceIds.length;
 
   return (
     // LAYOUT ONLY — no onClick here. gpuix fires an ancestor's onClick as
@@ -248,6 +277,9 @@ export function Tab(props: {
     // siblings instead.
     <div
       testId={`tab-${props.tab.id}`}
+      // A right-click is not a click: `onAuxClick` here does not fire the
+      // children's `onClick`, so this is safe on the layout row.
+      {...(props.onAuxClick ? { onAuxClick: props.onAuxClick } : {})}
       style={{
         display: 'flex',
         flexDirection: 'row',
@@ -296,7 +328,7 @@ export function Tab(props: {
           gap: tokens.space.sm,
         }}
       >
-        {surface?.bell ? (
+        {bell ? (
           <text
             style={{
               color: tokens.accent,
@@ -341,6 +373,16 @@ export function Tab(props: {
         >
           {title}
         </text>
+        {paneCount > 1 ? (
+          // Pane count chip: `[2]` in the chip font, ASCII so it shapes from the
+          // UI face like every other glyph (see Icon.tsx).
+          <text
+            testId={`tab-${props.tab.id}-panes`}
+            style={{ color: tokens.fg.muted, fontSize: tokens.font.chip, flexShrink: 0 }}
+          >
+            {`[${paneCount}]`}
+          </text>
+        ) : null}
         {badge ? (
           <text
             testId={`tab-${props.tab.id}-exited`}

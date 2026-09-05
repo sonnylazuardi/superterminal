@@ -108,9 +108,11 @@ From [`docs/plan/07-milestones.md`](./docs/plan/07-milestones.md):
 - [~] **M6** Packaging — Windows exe + per-user MSI ship and install; macOS
   `.app`, Linux tarball, release CI, nightly perf still open.
 - **[+] Beyond the plan** — loopback TCP transport, Windows-client/WSL-server
-  split, gpuix 0.7.0 bump, `fixing-gpuix-layout` skill.
-- **[ ] Out of scope (unchanged)** — remote SSH, split panes, web client,
-  ligatures, graphics protocols, scrollback search, signing/notarization.
+  split, gpuix 0.7.0 bump, `fixing-gpuix-layout` skill, remembered window
+  size / tab layout / sidebar width (Client State, ADR 0008), **split Panes**
+  with a right-click tab Menu and draggable dividers (ADR 0009, protocol 1.1).
+- **[ ] Out of scope (unchanged)** — remote SSH, web client, ligatures,
+  graphics protocols, scrollback search, signing/notarization.
 
 ## Documents
 

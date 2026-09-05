@@ -4,7 +4,8 @@
  * the state object does not change (05 §3).
  */
 
-import type { SessionView, SurfaceView, TabId, TabView, WorkspaceState } from './types.js';
+import { focusedSurfaceOf } from './layout.js';
+import type { SessionView, SurfaceId, SurfaceView, TabId, TabView, WorkspaceState } from './types.js';
 
 function memoPerState<T>(fn: (state: WorkspaceState) => T): (state: WorkspaceState) => T {
   const cache = new WeakMap<WorkspaceState, T>();
@@ -40,23 +41,44 @@ export const selectActiveTab = (state: WorkspaceState): TabView | null => {
   return id === null ? null : (state.tabs[id] ?? null);
 };
 
+/**
+ * The focused Pane's Surface of a Tab: what the user chose (`pane.focus`) if
+ * it is still one of the Tab's Panes, else the first Pane.
+ */
+export const selectFocusedSurfaceId = (state: WorkspaceState, tabId: TabId): SurfaceId | null => {
+  const tab = state.tabs[tabId];
+  return tab ? focusedSurfaceOf(tab, state.ui.focusedPaneByTab[tabId]) : null;
+};
+
+/** The active Tab's focused Pane's Surface — what Commands act on. */
 export const selectActiveSurface = (state: WorkspaceState): SurfaceView | null => {
   const tab = selectActiveTab(state);
-  return tab ? (state.surfaces[tab.surfaceId] ?? null) : null;
+  if (!tab) return null;
+  const id = selectFocusedSurfaceId(state, tab.id);
+  return id === null ? null : (state.surfaces[id] ?? null);
 };
 
+/** The Tab's focused Pane's Surface (its title is what the tab row shows). */
 export const selectSurfaceForTab = (state: WorkspaceState, tabId: TabId): SurfaceView | null => {
-  const tab = state.tabs[tabId];
-  return tab ? (state.surfaces[tab.surfaceId] ?? null) : null;
+  const id = selectFocusedSurfaceId(state, tabId);
+  return id === null ? null : (state.surfaces[id] ?? null);
 };
+
+/** Every Pane's Surface of a Tab that is known, in tree order. */
+export function selectTabSurfaces(state: WorkspaceState, tabId: TabId): SurfaceView[] {
+  const tab = state.tabs[tabId];
+  if (!tab) return [];
+  return tab.surfaceIds.map((id) => state.surfaces[id]).filter((s): s is SurfaceView => Boolean(s));
+}
 
 /**
- * Q44: only the visible `<terminal-grid>` is mounted. Warm Replicas live in
- * Rust, so this is always zero or one id.
+ * Q44 as amended by ADR 0009: every Pane of the visible Tab mounts a
+ * `<terminal-grid>`; nothing from other Tabs does. Warm Replicas for those
+ * live in Rust.
  */
 export const selectMountedSurfaceIds = memoPerState((state): number[] => {
-  const surface = selectActiveSurface(state);
-  return surface ? [surface.id] : [];
+  const tab = selectActiveTab(state);
+  return tab ? [...tab.surfaceIds] : [];
 });
 
 /** The tab index of `tabId` inside the active session, or -1. */

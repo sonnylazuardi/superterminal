@@ -28,10 +28,21 @@ import { selectActiveSurface } from '../state/selectors.js';
 import { debug } from '../util/debug.js';
 import { Banner, StatusToasts } from './Banner.js';
 import { CommandPalette } from './CommandPalette.js';
-import { AppProvider, useRunCommand, useServices, useWorkspace, type AppServices } from './context.js';
+import { Divider } from './Divider.js';
+import { Menu } from './Menu.js';
+import { clampSidebarWidth } from '../state/layout.js';
+import {
+  AppProvider,
+  useRunCommand,
+  useServices,
+  useWorkspace,
+  type AppServices,
+} from './context.js';
 import { ICONS, IconButton, sidebarIconInset } from './Icon.js';
 import { SurfaceHost } from './SurfaceHost.js';
 import { TabStrip } from './TabStrip.js';
+import { WindowSizeTracker } from './WindowSizeTracker.js';
+import { dragController } from './drag.js';
 
 const keysLog = debug('st:keys');
 
@@ -47,18 +58,19 @@ function AppFrame() {
   const { registry, commandContext, store, tokens } = useServices();
   const vertical = useWorkspace((s) => s.ui.verticalTabs);
   const paletteOpen = useWorkspace((s) => s.ui.paletteOpen);
+  const menuOpen = useWorkspace((s) => s.ui.menu !== null);
+  const sidebarWidth = useWorkspace((s) => s.ui.sidebarWidth);
 
   const onKeyDown = (event: KeyEventLike) => {
-    // While the palette is open it owns Esc/↑/↓/Enter; the `<input>` handles
-    // them, so only bail out for those keys (⌘K still toggles session mode).
-    if (paletteOpen && ['escape', 'up', 'down', 'enter'].includes(event.key ?? '')) return;
+    // While the palette or the Menu is open it owns Esc/↑/↓/Enter; its
+    // `<input>` handles them, so only bail out for those keys (⌘K still
+    // toggles session mode).
+    if ((paletteOpen || menuOpen) && ['escape', 'up', 'down', 'enter'].includes(event.key ?? '')) {
+      return;
+    }
 
     const match = registry.matchKeybinding(event, store.getState());
-    keysLog(
-      'key=%s matched=%s',
-      event.key ?? '(none)',
-      match ? match.command.id : '(none)',
-    );
+    keysLog('key=%s matched=%s', event.key ?? '(none)', match ? match.command.id : '(none)');
     if (!match) return;
     void Promise.resolve(match.command.run(commandContext, match.arg)).catch((err: unknown) => {
       store.dispatch({
@@ -84,13 +96,26 @@ function AppFrame() {
       {vertical ? null : <TitleBar />}
       <Banner />
       {vertical ? (
-        <div testId="frame" style={{ display: 'flex', flexDirection: 'row', flexGrow: 1, overflow: 'hidden' }}>
+        <div
+          testId="frame"
+          // Pointer moves/release for an active Divider drag (drag.ts) — on
+          // the frame, not the root: mouse listeners on the root element
+          // made gpuix stop delivering mouse events on Windows.
+          onMouseMove={dragController.move}
+          onMouseUp={dragController.end}
+          style={{
+            display: 'flex',
+            flexDirection: 'row',
+            flexGrow: 1,
+            overflow: 'hidden',
+          }}
+        >
           <div
             testId="sidebar"
             style={{
               display: 'flex',
               flexDirection: 'column',
-              width: tokens.strip.verticalWidth,
+              width: sidebarWidth,
               flexShrink: 0,
               backgroundColor: tokens.bg.glass,
             }}
@@ -99,9 +124,25 @@ function AppFrame() {
             <TabStrip />
             <SidebarFooter />
           </div>
-          <div
+          {/* The sidebar's right edge: drag sets the width live (the sidebar
+              starts at window x = 0, so the pointer's x IS the width);
+              double-click restores the default. Persisted as Client State. */}
+          <Divider
             testId="sidebar-divider"
-            style={{ width: tokens.border.width, flexShrink: 0, backgroundColor: tokens.border.glass }}
+            axis="row"
+            tokens={tokens}
+            onDrag={(x) =>
+              store.dispatch({
+                type: 'ui.setSidebarWidth',
+                width: clampSidebarWidth(x),
+              })
+            }
+            onDoubleClick={() =>
+              store.dispatch({
+                type: 'ui.setSidebarWidth',
+                width: tokens.strip.verticalWidth,
+              })
+            }
           />
           <div
             testId="content"
@@ -124,14 +165,23 @@ function AppFrame() {
       ) : (
         <div
           testId="frame"
-          style={{ display: 'flex', flexDirection: 'column', flexGrow: 1, overflow: 'hidden' }}
+          onMouseMove={dragController.move}
+          onMouseUp={dragController.end}
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            flexGrow: 1,
+            overflow: 'hidden',
+          }}
         >
           <TabStrip />
           <SurfaceHost />
         </div>
       )}
       <CommandPalette />
+      <Menu />
       <StatusToasts />
+      <WindowSizeTracker />
     </div>
   );
 }

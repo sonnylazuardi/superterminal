@@ -21,8 +21,18 @@ import { render, type Root } from '@gpuix/react';
 import { bootstrap, connect } from './bootstrap.js';
 import { parseArgv, USAGE } from './cli/argv.js';
 import { buildWindowOptions } from './platform/window-options.js';
+import {
+  createClientStatePersister,
+  type ClientState,
+  type ClientStatePersister,
+} from './state/client-state.js';
+import type { WorkspaceState } from './state/types.js';
+import type { WorkspaceStore } from './state/workspace-store.js';
 import { App } from './ui/App.js';
 import type { AppServices } from './ui/context.js';
+import { debug } from './util/debug.js';
+
+const eventsLog = debug('st:events');
 
 const BUILD_ID = process.env['SUPERTERMINAL_BUILD_ID'] ?? 'dev';
 const VERSION = process.env['SUPERTERMINAL_VERSION'] ?? '0.1.0';
@@ -30,6 +40,7 @@ const VERSION = process.env['SUPERTERMINAL_VERSION'] ?? '0.1.0';
 interface RootSlot {
   root: Root;
   services: AppServices;
+  persister: ClientStatePersister | null;
 }
 
 declare global {
@@ -73,25 +84,65 @@ export function main(argvInput: string[] = Bun.argv.slice(2)): void {
     socketPath: boot.socketPath,
   };
 
-  const windowOptions = buildWindowOptions(boot.config, boot.platform);
+  const windowOptions = buildWindowOptions(boot.config, boot.platform, boot.clientState.window);
+  // The window size is sampled by <WindowSizeTracker/> inside the tree:
+  // gpuix emits no resize event.
   const root = render(<App services={services} />, {
     ...windowOptions,
+    // `DEBUG=st:events` traces every native event before React sees it:
+    // the way to tell "gpuix never sent it" from "no handler matched".
     onEvent: (event) => {
-      if (event.eventType === 'windowResize') {
-        const size = event as unknown as { width?: number; height?: number };
-        boot.store.dispatch({
-          type: 'window.resize',
-          width: Number(size.width ?? 0),
-          height: Number(size.height ?? 0),
-        });
+      if (eventsLog.enabled) {
+        const e = event as unknown as Record<string, unknown>;
+        eventsLog(e['eventType'], 'el', e['elementId'], 'btn', e['button'], 'right', e['isRightClick'], 'key', e['key']);
       }
     },
   });
-  globalThis.__stRoot = { root, services };
+  const persister = boot.clientStatePath
+    ? persistClientState(boot.store, boot.clientStatePath, boot.clientState)
+    : null;
+  globalThis.__stRoot = { root, services, persister };
 
   // Connecting is deliberately not awaited: the window must appear even when
   // the server is broken, with a banner explaining why (05 §1 step 4).
   void connect(boot.client, boot.store, argv);
+}
+
+/** What the store knows that is worth remembering (ADR 0008). */
+export function clientStateOf(state: WorkspaceState): ClientState {
+  const { width, height } = state.ui.window;
+  return {
+    window: width > 0 && height > 0 ? { width, height } : null,
+    verticalTabs: state.ui.verticalTabs,
+    sidebarWidth: state.ui.sidebarWidth,
+  };
+}
+
+/**
+ * Write Client State as it changes, and once more on exit. The exit hook is
+ * the path that always runs: closing the window from the title bar ends in
+ * gpuix's `onTerminated → process.exit(0)`, not in the Quit command.
+ */
+function persistClientState(
+  store: WorkspaceStore,
+  path: string,
+  initial: ClientState,
+): ClientStatePersister {
+  const persister = createClientStatePersister({
+    path,
+    initial,
+    onError: (err) => {
+      process.stderr.write(`[superterminal] could not write ${path}: ${String(err)}\n`);
+    },
+  });
+  const push = () => {
+    const next = clientStateOf(store.getState());
+    // A window that has not been measured yet must not erase the last size.
+    persister.push(next.window ? next : { ...next, window: initial.window });
+  };
+  store.subscribe(push);
+  process.on('exit', () => persister.flush());
+  return persister;
 }
 
 if (import.meta.main) main();

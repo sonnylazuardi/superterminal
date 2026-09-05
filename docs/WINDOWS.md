@@ -110,6 +110,18 @@ admin). The full chain, all on Windows:
 
 ## Notes and limits
 
+- Split Panes (`tab.split` / `pane.close` / `tab.set_ratio`, protocol 1.1)
+  need a daemon built from this tree; a 1.0 daemon still works but shows one
+  Pane per Tab. Right-click a tab row for the Menu (Split Right / Split
+  Down / Close Pane / Close Tab); shortcuts on Windows are Ctrl+Shift+D,
+  Alt+Shift+D, Alt+Shift+W, Alt+] / Alt+[.
+
+- The client remembers its last window size and tab layout (Client State,
+  ADR 0008) in `%LOCALAPPDATA%\superterminal\client.json`; delete the file
+  or set `[window] remember = false` in `config.toml` to start from config.
+  Window position and the maximised state are not remembered: gpuix does not
+  expose them.
+
 - The data plane reconnects and re-attaches like the Unix transport; the
   framing is transport-agnostic (`02-protocol.md` §1.1).
 - `st --tcp 127.0.0.1:7171 status|ls|probe` works from either side for

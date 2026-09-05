@@ -6,17 +6,21 @@
  * platform (`tab.goto`, `surface.clearScrollback`) spell both out.
  */
 
+import type { SplitAxis } from '@superterminal/protocol-ts';
 import type { Platform } from '../platform/detect.js';
 import { parseKeybinding, type Keybinding } from '../platform/keys.js';
+import { relativeLeaf, siblingLeaf } from '../state/layout.js';
 import {
   selectActiveSession,
   selectActiveSurface,
   selectActiveTab,
   selectActiveTabs,
+  selectFocusedSurfaceId,
   selectRelativeTab,
   selectTabAt,
+  selectTabSurfaces,
 } from '../state/selectors.js';
-import type { WorkspaceState } from '../state/types.js';
+import type { TabView, WorkspaceState } from '../state/types.js';
 import type { Command, CommandArg, CommandContext } from './types.js';
 
 /** A binding spec: one string for both platforms, or one per platform. */
@@ -34,13 +38,22 @@ const connected = (s: WorkspaceState): boolean => s.connection.status === 'conne
 const hasActiveTab = (s: WorkspaceState): boolean => selectActiveTab(s) !== null;
 const hasSurface = (s: WorkspaceState): boolean => selectActiveSurface(s) !== null;
 const manyTabs = (s: WorkspaceState): boolean => selectActiveTabs(s).length > 1;
+const manyPanes = (s: WorkspaceState): boolean => (selectActiveTab(s)?.surfaceIds.length ?? 0) > 1;
+
+/** `arg` names a Tab (the Menu runs commands on the right-clicked row); else the active one. */
+function tabFromArg(state: WorkspaceState, arg: CommandArg | undefined): TabView | null {
+  return typeof arg === 'number' ? (state.tabs[arg] ?? null) : selectActiveTab(state);
+}
 
 /** Default grid size when nothing is known yet (the server clamps anyway). */
 const FALLBACK_COLS = 80;
 const FALLBACK_ROWS = 24;
 
-function spawnSpecFromState(state: WorkspaceState) {
-  const surface = selectActiveSurface(state);
+function spawnSpecFromState(state: WorkspaceState, surfaceId?: number | null) {
+  const surface =
+    surfaceId !== undefined && surfaceId !== null
+      ? (state.surfaces[surfaceId] ?? null)
+      : selectActiveSurface(state);
   return {
     // Q20: the cwd comes from the server's surface record, never from the
     // client's own process. An exited surface keeps its last known cwd.
@@ -79,17 +92,68 @@ export const COMMAND_DEFINITIONS: CommandDefinition[] = [
     bindings: ['mod+w'],
     when: hasActiveTab,
     async run(ctx, arg) {
+      await closeTab(ctx, tabFromArg(ctx.store.getState(), arg));
+    },
+  },
+  {
+    id: 'pane.splitRight',
+    title: 'Split Right',
+    // `mod+shift+x` collapses onto `mod+x` on Linux/Windows (mod = Ctrl+Shift),
+    // so the pane bindings are spelled per platform.
+    bindings: [{ darwin: 'mod+d', other: 'ctrl+shift+d' }],
+    when: hasActiveTab,
+    async run(ctx, arg) {
+      await splitPane(ctx, tabFromArg(ctx.store.getState(), arg), 'row');
+    },
+  },
+  {
+    id: 'pane.splitDown',
+    title: 'Split Down',
+    bindings: [{ darwin: 'mod+shift+d', other: 'alt+shift+d' }],
+    when: hasActiveTab,
+    async run(ctx, arg) {
+      await splitPane(ctx, tabFromArg(ctx.store.getState(), arg), 'column');
+    },
+  },
+  {
+    id: 'pane.close',
+    title: 'Close Pane',
+    bindings: [{ darwin: 'mod+shift+w', other: 'alt+shift+w' }],
+    when: hasActiveTab,
+    async run(ctx, arg) {
       const state = ctx.store.getState();
-      const tab = typeof arg === 'number' ? state.tabs[arg] : selectActiveTab(state);
+      const tab = tabFromArg(state, arg);
       if (!tab) return;
-      const surface = state.surfaces[tab.surfaceId];
-      // Q21: closing kills the surface, so confirm when something is running.
-      if (surface?.hasForegroundChild && state.ui.confirmingCloseTabId !== tab.id) {
-        ctx.store.dispatch({ type: 'tab.confirmClose', tabId: tab.id });
+      // The last Pane closing IS the Tab closing, confirmation included.
+      if (tab.surfaceIds.length <= 1) {
+        await closeTab(ctx, tab);
         return;
       }
-      ctx.store.dispatch({ type: 'tab.confirmClose', tabId: null });
-      await ctx.client.request('tab.close', { tab: tab.id });
+      const pane = selectFocusedSurfaceId(state, tab.id);
+      if (pane === null) return;
+      // Hand focus to the surviving sibling before the Pane goes, so the
+      // snapshot that removes it never lands on a Tab with stale focus.
+      const sibling = siblingLeaf(tab.layout, pane);
+      if (sibling !== null) ctx.store.dispatch({ type: 'pane.focus', tabId: tab.id, surfaceId: sibling });
+      await ctx.client.request('pane.close', { tab: tab.id, pane });
+    },
+  },
+  {
+    id: 'pane.focusNext',
+    title: 'Focus Next Pane',
+    bindings: [{ darwin: 'mod+]', other: 'alt+]' }],
+    when: manyPanes,
+    run(ctx) {
+      focusRelativePane(ctx, 1);
+    },
+  },
+  {
+    id: 'pane.focusPrev',
+    title: 'Focus Previous Pane',
+    bindings: [{ darwin: 'mod+[', other: 'alt+[' }],
+    when: manyPanes,
+    run(ctx) {
+      focusRelativePane(ctx, -1);
     },
   },
   {
@@ -231,6 +295,44 @@ export const COMMAND_DEFINITIONS: CommandDefinition[] = [
     },
   },
 ];
+
+/** Close a whole Tab, every Pane included (Q21: confirm when anything runs). */
+async function closeTab(ctx: CommandContext, tab: TabView | null): Promise<void> {
+  if (!tab) return;
+  const state = ctx.store.getState();
+  const busy = selectTabSurfaces(state, tab.id).some((s) => s.hasForegroundChild);
+  if (busy && state.ui.confirmingCloseTabId !== tab.id) {
+    ctx.store.dispatch({ type: 'tab.confirmClose', tabId: tab.id });
+    return;
+  }
+  ctx.store.dispatch({ type: 'tab.confirmClose', tabId: null });
+  await ctx.client.request('tab.close', { tab: tab.id });
+}
+
+/** Split the Tab's focused Pane; the new Pane takes focus once created. */
+async function splitPane(ctx: CommandContext, tab: TabView | null, axis: SplitAxis): Promise<void> {
+  if (!tab) return;
+  const state = ctx.store.getState();
+  const pane = selectFocusedSurfaceId(state, tab.id);
+  if (pane === null) return;
+  const created = await ctx.client.request('tab.split', {
+    tab: tab.id,
+    pane,
+    axis,
+    spawn: spawnSpecFromState(state, pane),
+  });
+  ctx.store.dispatch({ type: 'pane.focus', tabId: tab.id, surfaceId: created.surface });
+}
+
+function focusRelativePane(ctx: CommandContext, delta: number): void {
+  const state = ctx.store.getState();
+  const tab = selectActiveTab(state);
+  if (!tab) return;
+  const current = selectFocusedSurfaceId(state, tab.id);
+  if (current === null) return;
+  const next = relativeLeaf(tab.surfaceIds, current, delta);
+  if (next !== null) ctx.store.dispatch({ type: 'pane.focus', tabId: tab.id, surfaceId: next });
+}
 
 export function toCommand(def: CommandDefinition, platform: Platform, overrides?: string[]): Command {
   const specs: BindingSpec[] = overrides ?? def.bindings;

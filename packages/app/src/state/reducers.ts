@@ -7,12 +7,20 @@
  * never invents them, and `applyUiAction` never touches them.
  */
 
-import type { SurfaceMeta, Workspace, WorkspaceSnapshot } from '@superterminal/protocol-ts';
+import {
+  layoutLeaves,
+  tabLayout,
+  type SurfaceMeta,
+  type Workspace,
+  type WorkspaceSnapshot,
+} from '@superterminal/protocol-ts';
+import { clampRatio, clampSidebarWidth } from './layout.js';
 import type {
   ConnectionState,
   ServerEvent,
   SessionId,
   SessionView,
+  SurfaceId,
   SurfaceView,
   TabId,
   TabView,
@@ -27,6 +35,10 @@ export const initialUiState: UiState = {
   paletteQuery: '',
   paletteIndex: 0,
   verticalTabs: false,
+  sidebarWidth: 220,
+  focusedPaneByTab: {},
+  menu: null,
+  ratioPreview: null,
   renamingSessionId: null,
   confirmingCloseTabId: null,
   window: { width: 0, height: 0 },
@@ -84,7 +96,14 @@ function projectWorkspace(
   for (const session of workspace.sessions) {
     const tabIds: TabId[] = [];
     for (const tab of session.tabs) {
-      tabs[tab.id] = { id: tab.id, sessionId: session.id, surfaceId: tab.surface };
+      const layout = tabLayout(tab);
+      tabs[tab.id] = {
+        id: tab.id,
+        sessionId: session.id,
+        surfaceId: tab.surface,
+        layout,
+        surfaceIds: layoutLeaves(layout),
+      };
       tabIds.push(tab.id);
     }
     sessions[session.id] = { id: session.id, name: session.name, tabIds };
@@ -130,11 +149,27 @@ function pruneUi(
 ): UiState {
   const renamingGone = ui.renamingSessionId !== null && !sessions[ui.renamingSessionId];
   const confirmGone = ui.confirmingCloseTabId !== null && !tabs[ui.confirmingCloseTabId];
-  if (!renamingGone && !confirmGone) return ui;
+  const menuGone = ui.menu !== null && !tabs[ui.menu.tabId];
+  const previewGone = ui.ratioPreview !== null && !tabs[ui.ratioPreview.tabId];
+  // A focused Pane that closed (or a Tab that closed) drops out; the Tab then
+  // focuses its first Pane through the selector's fallback.
+  let focused = ui.focusedPaneByTab;
+  for (const [key, surfaceId] of Object.entries(ui.focusedPaneByTab)) {
+    const tab = tabs[Number(key)];
+    if (tab && tab.surfaceIds.includes(surfaceId)) continue;
+    if (focused === ui.focusedPaneByTab) focused = { ...focused };
+    delete focused[Number(key)];
+  }
+  if (!renamingGone && !confirmGone && !menuGone && !previewGone && focused === ui.focusedPaneByTab) {
+    return ui;
+  }
   return {
     ...ui,
     renamingSessionId: renamingGone ? null : ui.renamingSessionId,
     confirmingCloseTabId: confirmGone ? null : ui.confirmingCloseTabId,
+    menu: menuGone ? null : ui.menu,
+    ratioPreview: previewGone ? null : ui.ratioPreview,
+    focusedPaneByTab: focused,
   };
 }
 
@@ -265,6 +300,58 @@ export function applyUiAction(state: WorkspaceState, action: UiAction): Workspac
     case 'ui.setVerticalTabs':
       if (ui.verticalTabs === action.value) return state;
       return withUi(state, { verticalTabs: action.value });
+
+    case 'ui.setSidebarWidth': {
+      const width = clampSidebarWidth(action.width);
+      if (ui.sidebarWidth === width) return state;
+      return withUi(state, { sidebarWidth: width });
+    }
+
+    case 'pane.focus': {
+      // Membership is not checked: a `tab.split` result can land before the
+      // snapshot that adds the Pane. Selectors fall back to the first Pane
+      // until it does, and `pruneUi` drops it if it never arrives.
+      if (!state.tabs[action.tabId]) return state;
+      if (ui.focusedPaneByTab[action.tabId] === action.surfaceId) return state;
+      return withUi(state, {
+        focusedPaneByTab: { ...ui.focusedPaneByTab, [action.tabId]: action.surfaceId },
+      });
+    }
+
+    case 'menu.open':
+      if (!state.tabs[action.tabId]) return state;
+      return withUi(state, { menu: { tabId: action.tabId, x: action.x, y: action.y, index: 0 } });
+
+    case 'menu.close':
+      if (ui.menu === null) return state;
+      return withUi(state, { menu: null });
+
+    case 'menu.move': {
+      if (ui.menu === null || action.count <= 0) return state;
+      const next = (((ui.menu.index + action.delta) % action.count) + action.count) % action.count;
+      if (next === ui.menu.index) return state;
+      return withUi(state, { menu: { ...ui.menu, index: next } });
+    }
+
+    case 'ratio.preview': {
+      if (!state.tabs[action.tabId]) return state;
+      const ratio = clampRatio(action.ratio);
+      const current = ui.ratioPreview;
+      if (
+        current &&
+        current.tabId === action.tabId &&
+        current.ratio === ratio &&
+        current.path.length === action.path.length &&
+        current.path.every((step, i) => step === action.path[i])
+      ) {
+        return state;
+      }
+      return withUi(state, { ratioPreview: { tabId: action.tabId, path: [...action.path], ratio } });
+    }
+
+    case 'ratio.clear':
+      if (ui.ratioPreview === null) return state;
+      return withUi(state, { ratioPreview: null });
 
     case 'session.beginRename':
       if (!state.sessions[action.sessionId]) return state;

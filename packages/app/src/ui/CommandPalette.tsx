@@ -3,6 +3,14 @@
  * `<input>` and a plain `<div>` list capped at 8 visible rows (nested scrolling
  * is unsupported, so the window of items shifts instead of scrolling).
  *
+ * Placement: a Dialog opens at the top centre of the window (CONTEXT.md), so
+ * the layer is given an explicit `position`. gpuix's `side`/`align` are
+ * *trigger-relative* — the trigger here is the full-window root, so
+ * `side="bottom"` meant "below the window" and the deferred layer took no part
+ * in the centring flex: the palette landed bottom-left. With `position` the
+ * anchor point is absolute and `anchor="topCenter"` centres the layer's top
+ * edge on it.
+ *
  * Modes: `commands` (⌘⇧P / Ctrl+Shift+P) and `sessions` (⌘K / Ctrl+Shift+K).
  * In sessions mode a trailing row offers **New Session "‹query›"** when the
  * query matches no existing name.
@@ -33,6 +41,11 @@ export function CommandPalette() {
   const index = state.ui.paletteIndex;
   const sessions = useWorkspace(selectSessions);
   const run = useRunCommand();
+  // Select the primitive, not a fresh object: `useSyncExternalStore` compares
+  // selector results by identity and would re-render forever.
+  const windowWidth = useWorkspace((s) => s.ui.window.width);
+  const vertical = useWorkspace((s) => s.ui.verticalTabs);
+  const placement = dialogPlacement(windowWidth, tokens, vertical);
 
   if (!open) return null;
 
@@ -57,10 +70,8 @@ export function CommandPalette() {
   return (
     <anchored
       testId="command-palette"
-      side="bottom"
-      align="center"
       anchor="topCenter"
-      offset={{ x: 0, y: tokens.strip.titleBarHeight + tokens.space.xl }}
+      position={placement}
       style={{
         width: WIDTH,
         display: 'flex', // REQUIRED or children are blocks
@@ -70,105 +81,140 @@ export function CommandPalette() {
         borderWidth: tokens.border.width,
         borderColor: tokens.border.glass,
         overflow: 'hidden', // keep rounded corners from being painted over
-        padding: tokens.space.lg,
-        gap: tokens.space.xs,
       }}
     >
-      <input
-        testId="palette-input"
-        autoFocus
-        value={query}
-        placeholder={mode === 'commands' ? 'Run a command…' : 'Switch or create a session…'}
+      {/* `<anchored>` supports only click/enter/leave, so the outside-click
+          listener lives on this inner div (see Menu.tsx). */}
+      <div
+        testId="palette-body"
+        onMouseDownOutside={() => store.dispatch({ type: 'palette.close' })}
         style={{
-          height: tokens.strip.paletteInputHeight,
-          paddingLeft: tokens.space.lg,
-          paddingRight: tokens.space.lg,
-          marginBottom: tokens.space.md,
-          borderRadius: tokens.radius.tab,
-          backgroundColor: tokens.bg.glass,
-          borderWidth: tokens.border.width,
-          borderColor: tokens.accent,
-          color: tokens.fg.primary,
-          fontSize: tokens.font.paletteInput,
+          display: 'flex',
+          flexDirection: 'column',
+          padding: tokens.space.lg,
+          gap: tokens.space.xs,
         }}
-        onChange={(event) =>
-          store.dispatch({ type: 'palette.setQuery', query: String(event.value ?? '') })
-        }
-        onKeyDown={(event) => {
-          switch (event.key) {
-            case 'escape':
-              store.dispatch({ type: 'palette.close' });
-              return;
-            case 'down':
-              store.dispatch({ type: 'palette.move', delta: 1, count: rows.length });
-              return;
-            case 'up':
-              store.dispatch({ type: 'palette.move', delta: -1, count: rows.length });
-              return;
-            case 'enter':
-              rows[clamped]?.activate();
-              return;
-            default:
+      >
+        <input
+          testId="palette-input"
+          autoFocus
+          value={query}
+          placeholder={mode === 'commands' ? 'Run a command…' : 'Switch or create a session…'}
+          style={{
+            height: tokens.strip.paletteInputHeight,
+            paddingLeft: tokens.space.lg,
+            paddingRight: tokens.space.lg,
+            marginBottom: tokens.space.md,
+            borderRadius: tokens.radius.tab,
+            backgroundColor: tokens.bg.glass,
+            borderWidth: tokens.border.width,
+            borderColor: tokens.accent,
+            color: tokens.fg.primary,
+            fontSize: tokens.font.paletteInput,
+          }}
+          onChange={(event) =>
+            store.dispatch({
+              type: 'palette.setQuery',
+              query: String(event.value ?? ''),
+            })
           }
-        }}
-      />
-      {visible.map((row, i) => {
-        const selected = start + i === clamped;
-        return (
+          // Enter never reaches `onKeyDown`: the gpuix input binds it to its own
+          // Submit action and GPUI consumes a keystroke that matched an action
+          // before key listeners run. Esc/↑/↓ are unbound and do arrive.
+          onSubmit={() => rows[clamped]?.activate()}
+          onKeyDown={(event) => {
+            switch (event.key) {
+              case 'escape':
+                store.dispatch({ type: 'palette.close' });
+                return;
+              case 'down':
+                store.dispatch({
+                  type: 'palette.move',
+                  delta: 1,
+                  count: rows.length,
+                });
+                return;
+              case 'up':
+                store.dispatch({
+                  type: 'palette.move',
+                  delta: -1,
+                  count: rows.length,
+                });
+                return;
+              default:
+            }
+          }}
+        />
+        {visible.map((row, i) => {
+          const selected = start + i === clamped;
+          return (
+            <div
+              key={row.key}
+              testId={`palette-row-${row.key}`}
+              onClick={row.activate}
+              style={{
+                display: 'flex',
+                flexDirection: 'row',
+                alignItems: 'center',
+                height: tokens.strip.rowHeight,
+                paddingLeft: tokens.space.lg,
+                paddingRight: tokens.space.lg,
+                gap: tokens.space.lg,
+                borderRadius: tokens.radius.tab,
+                backgroundColor: selected ? tokens.bg.glassActive : 'transparent',
+                borderWidth: tokens.border.width,
+                borderColor: selected ? tokens.accent : 'transparent',
+                cursor: 'pointer',
+                hover: { backgroundColor: tokens.bg.glassHover },
+              }}
+            >
+              <text
+                style={{
+                  color: tokens.fg.primary,
+                  fontSize: tokens.font.chrome,
+                  flexGrow: 1,
+                  minWidth: 0,
+                  overflow: 'hidden',
+                  whiteSpace: 'nowrap',
+                  textOverflow: 'ellipsis',
+                }}
+              >
+                {row.title}
+              </text>
+              <text
+                style={{
+                  color: tokens.fg.muted,
+                  fontSize: tokens.font.chip,
+                  flexShrink: 0,
+                }}
+              >
+                {row.hint}
+              </text>
+            </div>
+          );
+        })}
+        {rows.length === 0 ? (
           <div
-            key={row.key}
-            testId={`palette-row-${row.key}`}
-            onClick={row.activate}
             style={{
               display: 'flex',
               flexDirection: 'row',
               alignItems: 'center',
               height: tokens.strip.rowHeight,
-              paddingLeft: tokens.space.lg,
-              paddingRight: tokens.space.lg,
-              gap: tokens.space.lg,
-              borderRadius: tokens.radius.tab,
-              backgroundColor: selected ? tokens.bg.glassActive : 'transparent',
-              borderWidth: tokens.border.width,
-              borderColor: selected ? tokens.accent : 'transparent',
-              cursor: 'pointer',
-              hover: { backgroundColor: tokens.bg.glassHover },
             }}
           >
             <text
-              style={{
-                color: tokens.fg.primary,
-                fontSize: tokens.font.chrome,
-                flexGrow: 1,
-                minWidth: 0,
-                overflow: 'hidden',
-                whiteSpace: 'nowrap',
-                textOverflow: 'ellipsis',
-              }}
+              testId="palette-empty"
+              style={{ color: tokens.fg.muted, fontSize: tokens.font.chrome }}
             >
-              {row.title}
-            </text>
-            <text style={{ color: tokens.fg.muted, fontSize: tokens.font.chip, flexShrink: 0 }}>
-              {row.hint}
+              No matches
             </text>
           </div>
-        );
-      })}
-      {rows.length === 0 ? (
-        <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', height: tokens.strip.rowHeight }}>
-          <text testId="palette-empty" style={{ color: tokens.fg.muted, fontSize: tokens.font.chrome }}>
-            No matches
-          </text>
-        </div>
-      ) : null}
+        ) : null}
+      </div>
     </anchored>
   );
 
-  function sessionRows(
-    all: SessionView[],
-    q: string,
-    activeSessionId: number | null,
-  ): Row[] {
+  function sessionRows(all: SessionView[], q: string, activeSessionId: number | null): Row[] {
     const matches = all
       .map((session) => ({ session, score: fuzzyScore(q, session.name) }))
       .filter((r): r is { session: SessionView; score: number } => r.score !== null)
@@ -182,7 +228,11 @@ export function CommandPalette() {
           void commandContext.client
             .request('session.set_active', { session: session.id })
             .catch(() => {
-              store.dispatch({ type: 'toast.push', text: 'Could not switch session', kind: 'error' });
+              store.dispatch({
+                type: 'toast.push',
+                text: 'Could not switch session',
+                kind: 'error',
+              });
             });
         },
       }));
@@ -201,6 +251,26 @@ export function CommandPalette() {
     }
     return matches;
   }
+}
+
+/**
+ * Where a Dialog's top-centre goes: horizontally centred, just below the
+ * chrome — the title bar, plus the tab strip when it runs along the top.
+ * Before the first size sample `width` is 0; anchoring at x=0 would put half
+ * the panel off-screen (gpui's snap-to-window then shoves it to the left
+ * margin), so fall back to a plausible centre until the sample lands.
+ */
+export function dialogPlacement(
+  windowWidth: number,
+  tokens: {
+    strip: { titleBarHeight: number; height: number };
+    space: { xl: number };
+  },
+  verticalTabs: boolean,
+): { x: number; y: number } {
+  const width = windowWidth > 0 ? windowWidth : 2 * WIDTH;
+  const chrome = tokens.strip.titleBarHeight + (verticalTabs ? 0 : tokens.strip.height);
+  return { x: Math.round(width / 2), y: chrome + tokens.space.xl };
 }
 
 /** Exported for the palette-only tests in `05 §9` once a test renderer exists. */
