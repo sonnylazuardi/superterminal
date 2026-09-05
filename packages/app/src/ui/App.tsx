@@ -42,7 +42,6 @@ import { ICONS, IconButton, sidebarIconInset } from './Icon.js';
 import { SurfaceHost } from './SurfaceHost.js';
 import { TabStrip } from './TabStrip.js';
 import { WindowSizeTracker } from './WindowSizeTracker.js';
-import { dragController } from './drag.js';
 
 const keysLog = debug('st:keys');
 
@@ -98,11 +97,6 @@ function AppFrame() {
       {vertical ? (
         <div
           testId="frame"
-          // Pointer moves/release for an active Divider drag (drag.ts) — on
-          // the frame, not the root: mouse listeners on the root element
-          // made gpuix stop delivering mouse events on Windows.
-          onMouseMove={dragController.move}
-          onMouseUp={dragController.end}
           style={{
             display: 'flex',
             flexDirection: 'row',
@@ -165,8 +159,6 @@ function AppFrame() {
       ) : (
         <div
           testId="frame"
-          onMouseMove={dragController.move}
-          onMouseUp={dragController.end}
           style={{
             display: 'flex',
             flexDirection: 'column',

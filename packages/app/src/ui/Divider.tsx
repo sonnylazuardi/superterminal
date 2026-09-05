@@ -3,15 +3,18 @@
  *
  * Visually it is the usual 1px `border.glass` line; the hit area is a wider
  * invisible band (`GRAB` px) so the pointer does not have to land on the
- * hairline. The band takes ONLY the press: gpuix gives an element that has
- * both `onMouseDown` and `onMouseMove` GPUI pointer capture, which on this
- * GPUI build turns the press into a click on an unrelated element (see
- * `drag.ts`). So the press registers a drag with `dragController` and the
- * app root forwards the moves and the release while it is active:
+ * hairline. The band takes the press AND the moves/release: `onMouseDown` +
+ * `onMouseMove` give it GPUI pointer capture (see `drag.ts` for why an
+ * ancestor cannot do this).
  *
- *   mouseDown (here) → onDragStart(pos)   pos is the window coordinate along the axis
- *   root mouseMove   → onDrag(pos)        only while the primary button is held
- *   root mouseUp     → onDragEnd()
+ *   mouseDown → onDragStart(pos)   pos is the window coordinate along the axis
+ *   mouseMove → onDrag(pos)        only while the primary button is held
+ *   mouseUp   → onDragEnd()
+ *
+ * Sizing: the band is stretched along the axis by the parent flex container
+ * (`alignSelf: 'stretch'`), never `height/width: '100%'` — the parent is
+ * sized by `flexGrow`, so its extent is indefinite during layout and taffy
+ * resolves the percentage to `auto` → a 7×0 band with an empty hitbox.
  *
  * The component keeps no geometry of its own: what a position *means* is the
  * caller's business (a sidebar width, a Split ratio).
@@ -75,10 +78,18 @@ export function Divider(props: DividerProps) {
   return (
     <div
       testId={props.testId}
-      // ONLY onMouseDown here: adding onMouseMove makes gpuix capture the
-      // pointer, which breaks the press on this GPUI build (drag.ts).
+      // onMouseDown + onMouseMove make gpuix capture the pointer (GPUI
+      // `capture_pointer`), so the moves and the release keep coming to this
+      // band after the pointer leaves it — ancestors are never "hovered"
+      // here because filled elements occlude the hit test.
       onMouseDown={onMouseDown}
+      onMouseMove={(event: DividerMouseEvent & { pressedButton?: number }) =>
+        dragController.move(event)
+      }
       onMouseUp={() => dragController.end()}
+      ref={(instance: { id?: number } | null) => {
+        if (instance && dragLog.enabled) dragLog('mounted', props.testId, 'element', instance.id);
+      }}
       style={{
         // The band: `GRAB` thick across the axis and STRETCHED along it by
         // the parent flex container. Not `height/width: '100%'`: the parent

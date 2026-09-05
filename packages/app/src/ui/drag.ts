@@ -2,17 +2,16 @@
  * One active pointer drag for the whole window (Divider → sidebar width /
  * Split ratio).
  *
- * Why the moves are routed through the app root instead of the Divider's
- * own `onMouseMove`: gpuix calls GPUI `capture_pointer()` on any element
- * that has BOTH `onMouseDown` and `onMouseMove`, and in the vendored GPUI a
- * captured hitbox id is re-mapped on the next frame — the press turns into
- * a click on whichever element inherits that id (observed on Windows: the
- * session chip) and the Divider never sees its move/up. With only
- * `onMouseDown` on the Divider the press is delivered correctly, so the
- * Divider registers a drag here and `App` attaches `onMouseMove`/`onMouseUp`
- * to the root only while one is active.
+ * The Divider itself receives every event of a drag: gpuix gives an element
+ * with both `onMouseDown` and `onMouseMove` GPUI pointer capture, so once the
+ * band is pressed its moves and release keep arriving wherever the pointer
+ * goes. Routing moves through an ancestor cannot work here — gpuix marks
+ * every element with an opaque background as occluding (`should_occlude`),
+ * so the frame/root are never "hovered" over a Pane or the sidebar. Verified
+ * on Windows through GPUI-level dispatch (`util/drive.ts`).
  *
- * A tiny external store so React can subscribe to "is a drag active".
+ * This module only keeps the drag's state and handlers between the press
+ * and the release, so the Divider stays free of geometry.
  */
 
 export interface DragHandlers {

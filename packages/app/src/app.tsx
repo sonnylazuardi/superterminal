@@ -31,6 +31,7 @@ import type { WorkspaceStore } from './state/workspace-store.js';
 import { App } from './ui/App.js';
 import type { AppServices } from './ui/context.js';
 import { debug } from './util/debug.js';
+import { startDriveFile } from './util/drive.js';
 
 const eventsLog = debug('st:events');
 
@@ -102,6 +103,16 @@ export function main(argvInput: string[] = Bun.argv.slice(2)): void {
     ? persistClientState(boot.store, boot.clientStatePath, boot.clientState)
     : null;
   globalThis.__stRoot = { root, services, persister };
+
+  // Dev-only scripted input (util/drive.ts); the renderer lives in gpuix's
+  // render slot on globalThis.
+  const drivePath = process.env['SUPERTERMINAL_DRIVE'];
+  if (drivePath) {
+    const slot = (globalThis as Record<string, unknown>)['__gpuixRenderHost'] as
+      | { renderer?: Parameters<typeof startDriveFile>[1] }
+      | undefined;
+    if (slot?.renderer) startDriveFile(drivePath, slot.renderer);
+  }
 
   // Connecting is deliberately not awaited: the window must appear even when
   // the server is broken, with a banner explaining why (05 §1 step 4).
