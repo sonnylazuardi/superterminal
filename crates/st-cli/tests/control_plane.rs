@@ -109,7 +109,7 @@ fn status_sends_a_tool_hello_then_two_requests() {
 
     assert_eq!(seen[0]["t"], "hello");
     assert_eq!(seen[0]["client_kind"], "tool");
-    assert_eq!(seen[0]["proto_version"], "1.0");
+    assert_eq!(seen[0]["proto_version"], "1.1");
     assert!(seen[0]["build_id"].is_string());
 
     assert_eq!(seen[1]["t"], "server.status");

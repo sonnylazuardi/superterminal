@@ -206,3 +206,86 @@ async fn shutdown_flushes_the_document_immediately() {
         .expect("the shutdown flush bypasses the debounce");
     assert_eq!(saved["sessions"][1]["name"], "flushed");
 }
+
+#[tokio::test]
+async fn a_restart_reseeds_every_pane_of_a_split_tab() {
+    let harness = Harness::start().await;
+    let mut client = harness.client().await;
+
+    let snapshot = client.ok(json!({ "t": "workspace.get" })).await;
+    let tab = snapshot["workspace"]["sessions"][0]["tabs"][0]["id"]
+        .as_u64()
+        .unwrap();
+    let first = snapshot["workspace"]["sessions"][0]["tabs"][0]["surface"]
+        .as_u64()
+        .unwrap();
+    let second = client
+        .ok(json!({
+            "t": "tab.split", "tab": tab, "pane": first, "axis": "row", "spawn": spawn_spec()
+        }))
+        .await["surface"]
+        .as_u64()
+        .unwrap();
+    client
+        .ok(json!({
+            "t": "tab.split", "tab": tab, "pane": second, "axis": "column", "spawn": spawn_spec()
+        }))
+        .await;
+    client
+        .ok(json!({ "t": "tab.set_ratio", "tab": tab, "path": [1], "ratio": 0.25 }))
+        .await;
+    client
+        .ok(json!({ "t": "surface.rename", "surface": second, "user_title": "middle" }))
+        .await;
+
+    assert!(
+        harness
+            .wait_until(SETTLE, || {
+                harness.saved().is_some_and(|s| {
+                    s["sessions"][0]["tabs"][0]["layout"]["second"]["ratio"] == 0.25
+                })
+            })
+            .await
+    );
+    let saved = harness.saved().unwrap();
+    let saved_tab = &saved["sessions"][0]["tabs"][0];
+    assert_eq!(
+        saved_tab["surface"]["id"],
+        json!(first),
+        "surface is the first leaf"
+    );
+    assert_eq!(saved_tab["layout"]["kind"], "split");
+    assert_eq!(saved_tab["layout"]["axis"], "row");
+    assert_eq!(
+        saved_tab["layout"]["second"]["first"]["surface"]["user_title"],
+        "middle"
+    );
+    client.close().await;
+
+    let harness = harness.restart().await;
+    let mut client = harness.client().await;
+    let after = client.ok(json!({ "t": "workspace.get" })).await;
+    let tab_doc = &after["workspace"]["sessions"][0]["tabs"][0];
+    assert_eq!(tab_doc["id"], json!(tab), "tab ids survive");
+    let layout = &tab_doc["layout"];
+    assert_eq!(layout["kind"], "split");
+    assert_eq!(layout["axis"], "row");
+    assert_eq!(layout["second"]["axis"], "column");
+    assert_eq!(layout["second"]["ratio"], 0.25, "ratios survive");
+    assert_eq!(
+        tab_doc["surface"], layout["first"]["surface"],
+        "surface is still the first leaf"
+    );
+    assert_eq!(
+        after["surfaces"].as_array().unwrap().len(),
+        3,
+        "every Pane was respawned"
+    );
+    let middle = after["surfaces"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["id"] == layout["second"]["first"]["surface"])
+        .unwrap();
+    assert_eq!(middle["user_title"], "middle");
+}

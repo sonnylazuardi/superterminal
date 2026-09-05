@@ -21,6 +21,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
+use st_proto::control::{Layout, SplitAxis, SplitRatio};
 use st_proto::{SessionId, SurfaceId, TabId};
 use tokio::sync::{mpsc, oneshot};
 
@@ -64,12 +65,71 @@ pub struct PersistedSession {
 }
 
 /// A Tab as persisted, with its Surface inlined (§8's example shape).
+///
+/// A split Tab (ADR 0009) additionally carries `layout`, a tree whose leaves
+/// are the re-seed recipes of every Pane; `surface` stays the first leaf so
+/// a daemon that predates splits still restores the Tab's first Pane. A
+/// single-Pane Tab writes no `layout`, so its file is byte-identical to what
+/// such a daemon writes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PersistedTab {
     /// Tab id, preserved across restarts.
     pub id: TabId,
-    /// The Surface to recreate for this Tab.
+    /// The Surface to recreate for this Tab's first Pane.
     pub surface: PersistedSurface,
+    /// The Split tree, present only when the Tab has more than one Pane.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layout: Option<PersistedLayout>,
+}
+
+impl PersistedTab {
+    /// The layout to re-seed: the tree when there is one, else the one Pane.
+    #[must_use]
+    pub fn layout(&self) -> PersistedLayout {
+        self.layout
+            .clone()
+            .unwrap_or_else(|| PersistedLayout::Leaf {
+                surface: self.surface.clone(),
+            })
+    }
+}
+
+/// The persisted form of [`Layout`]: the same tree with a re-seed recipe at
+/// every leaf.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum PersistedLayout {
+    /// One Pane.
+    Leaf {
+        /// How to recreate it.
+        surface: PersistedSurface,
+    },
+    /// A Split.
+    Split {
+        /// Which way the children are laid out.
+        axis: SplitAxis,
+        /// The first child's share.
+        ratio: SplitRatio,
+        /// Left / top.
+        first: Box<PersistedLayout>,
+        /// Right / bottom.
+        second: Box<PersistedLayout>,
+    },
+}
+
+impl PersistedLayout {
+    /// The re-seed recipes of every Pane, in tree order.
+    #[must_use]
+    pub fn leaves(&self) -> Vec<&PersistedSurface> {
+        match self {
+            Self::Leaf { surface } => vec![surface],
+            Self::Split { first, second, .. } => {
+                let mut out = first.leaves();
+                out.extend(second.leaves());
+                out
+            }
+        }
+    }
 }
 
 /// The re-seed recipe for one Surface.
@@ -128,8 +188,9 @@ fn persist_session(session: &Session) -> PersistedSession {
     }
 }
 
-/// Builds the persisted form, resolving each Tab's Surface out of the
-/// Workspace's Surface table.
+/// Builds the persisted form, resolving each Pane's Surface out of the
+/// Workspace's Surface table. A Tab none of whose Surfaces is known is
+/// dropped; a split Tab with some unknown Panes keeps the known ones.
 #[must_use]
 pub fn snapshot_file(ws: &Workspace) -> WorkspaceFile {
     let mut file = WorkspaceFile::from_workspace(ws);
@@ -138,14 +199,45 @@ pub fn snapshot_file(ws: &Workspace) -> WorkspaceFile {
             .tabs
             .iter()
             .filter_map(|tab| {
-                ws.surfaces.get(&tab.surface).map(|surface| PersistedTab {
+                let layout = persist_layout(ws, &tab.layout)?;
+                let surface = layout.leaves().first().map(|s| (*s).clone())?;
+                Some(PersistedTab {
                     id: tab.id,
-                    surface: persist_surface(surface),
+                    surface,
+                    layout: match layout {
+                        PersistedLayout::Leaf { .. } => None,
+                        split => Some(split),
+                    },
                 })
             })
             .collect();
     }
     file
+}
+
+/// Projects a layout, dropping Panes whose Surface the Workspace no longer
+/// knows and collapsing their Splits.
+fn persist_layout(ws: &Workspace, layout: &Layout) -> Option<PersistedLayout> {
+    match layout {
+        Layout::Leaf { surface } => ws.surfaces.get(surface).map(|s| PersistedLayout::Leaf {
+            surface: persist_surface(s),
+        }),
+        Layout::Split {
+            axis,
+            ratio,
+            first,
+            second,
+        } => match (persist_layout(ws, first), persist_layout(ws, second)) {
+            (Some(first), Some(second)) => Some(PersistedLayout::Split {
+                axis: *axis,
+                ratio: *ratio,
+                first: Box::new(first),
+                second: Box::new(second),
+            }),
+            (Some(only), None) | (None, Some(only)) => Some(only),
+            (None, None) => None,
+        },
+    }
 }
 
 fn persist_surface(surface: &Surface) -> PersistedSurface {
@@ -442,6 +534,68 @@ mod tests {
         );
         assert!(!text.contains("pid"), "pids are not persisted");
         assert!(!text.contains("cols"), "the grid size is not persisted");
+    }
+
+    #[test]
+    fn a_split_tab_persists_its_tree_and_a_plain_tab_writes_no_layout() {
+        let mut ws = workspace();
+        let tab = ws.sessions[0].tabs[0].id;
+        ws.insert_surface(Surface {
+            id: SurfaceId(8),
+            title: "vim".into(),
+            user_title: None,
+            cwd: Some("/tmp".into()),
+            shell: vec!["/bin/sh".into()],
+            cols: 80,
+            rows: 24,
+            has_foreground_child: false,
+            status: SurfaceStatus::Running { pid: Some(5) },
+            view: ViewState::default(),
+            pristine: true,
+        });
+        let plain = snapshot_file(&ws);
+        assert!(plain.sessions[0].tabs[0].layout.is_none());
+        assert!(
+            !serde_json::to_string(&plain).unwrap().contains("layout"),
+            "a single-Pane Tab is written exactly as before"
+        );
+
+        ws.split_pane(tab, SurfaceId(7), SplitAxis::Column, SurfaceId(8))
+            .unwrap();
+        let file = snapshot_file(&ws);
+        let saved = &file.sessions[0].tabs[0];
+        assert_eq!(
+            saved.surface.id,
+            SurfaceId(7),
+            "surface stays the first leaf"
+        );
+        let layout = saved.layout.clone().expect("a split tab carries its tree");
+        let leaves = layout.leaves();
+        assert_eq!(leaves.len(), 2);
+        assert_eq!(leaves[1].cwd.as_deref(), Some("/tmp"));
+
+        let json = serde_json::to_value(&file).unwrap();
+        let tab_json = &json["sessions"][0]["tabs"][0];
+        assert_eq!(tab_json["layout"]["kind"], "split");
+        assert_eq!(tab_json["layout"]["axis"], "column");
+        assert_eq!(tab_json["layout"]["ratio"], 0.5);
+        assert_eq!(
+            tab_json["layout"]["second"]["surface"]["shell"][0],
+            "/bin/sh"
+        );
+        assert_eq!(serde_json::from_value::<WorkspaceFile>(json).unwrap(), file);
+    }
+
+    #[test]
+    fn a_file_without_layout_reads_as_one_pane() {
+        let text = r#"{"version":1,"saved_at":"x","next_id":3,"active_session":1,
+            "sessions":[{"id":1,"name":"Default","active_tab":2,"tabs":[{"id":2,
+            "surface":{"id":1,"cwd":"/tmp","shell":["/bin/sh"],"title":"sh"}}]}]}"#;
+        let file: WorkspaceFile = serde_json::from_str(text).unwrap();
+        let tab = &file.sessions[0].tabs[0];
+        assert!(tab.layout.is_none());
+        assert!(matches!(tab.layout(), PersistedLayout::Leaf { .. }));
+        assert_eq!(tab.layout().leaves().len(), 1);
     }
 
     #[test]

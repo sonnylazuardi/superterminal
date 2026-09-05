@@ -352,12 +352,35 @@ pub fn spawn_spec() -> impl Strategy<Value = SpawnSpec> {
         })
 }
 
+pub fn split_axis() -> impl Strategy<Value = SplitAxis> {
+    prop_oneof![Just(SplitAxis::Row), Just(SplitAxis::Column)]
+}
+
+pub fn split_ratio() -> impl Strategy<Value = SplitRatio> {
+    (0u16..=1000).prop_map(|n| SplitRatio::from_f32(f32::from(n) / 1000.0))
+}
+
+/// A leaf, or up to two levels of Splits above leaves.
+pub fn layout() -> impl Strategy<Value = Layout> {
+    let leaf = surface_id().prop_map(Layout::leaf);
+    leaf.prop_recursive(2, 7, 2, |inner| {
+        (split_axis(), split_ratio(), inner.clone(), inner).prop_map(
+            |(axis, ratio, first, second)| Layout::Split {
+                axis,
+                ratio,
+                first: Box::new(first),
+                second: Box::new(second),
+            },
+        )
+    })
+}
+
 pub fn session() -> impl Strategy<Value = Session> {
     (
         session_id(),
         ".{0,10}",
         option::of(tab_id()),
-        vec((tab_id(), surface_id()), 0..4),
+        vec((tab_id(), layout()), 0..4),
     )
         .prop_map(|(id, name, active_tab, tabs)| Session {
             id,
@@ -365,7 +388,7 @@ pub fn session() -> impl Strategy<Value = Session> {
             active_tab,
             tabs: tabs
                 .into_iter()
-                .map(|(id, surface)| Tab { id, surface })
+                .map(|(id, layout)| Tab::with_layout(id, layout))
                 .collect(),
         })
 }

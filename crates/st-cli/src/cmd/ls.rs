@@ -14,7 +14,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 
 use serde_json::Value;
-use st_proto::control::{Req, SurfaceMeta, SurfaceState, WorkspaceSnapshot};
+use st_proto::control::{Layout, Req, SplitAxis, SurfaceMeta, SurfaceState, WorkspaceSnapshot};
 use st_proto::SurfaceId;
 
 use crate::control::ControlClient;
@@ -92,14 +92,7 @@ pub fn render_tree(snapshot: &WorkspaceSnapshot, pids: &BTreeMap<u32, u64>) -> S
                 ""
             };
             out.push_str(&format!("  tab {}{active}\n", tab.id));
-            attached.insert(tab.surface);
-            out.push_str(&format!(
-                "    {}\n",
-                match by_id.get(&tab.surface) {
-                    Some(meta) => surface_line(meta, pids.get(&tab.surface.get()).copied()),
-                    None => format!("surface {} <not in the surfaces list>", tab.surface),
-                }
-            ));
+            render_layout(&tab.layout, 2, &by_id, pids, &mut attached, &mut out);
         }
     }
 
@@ -119,6 +112,43 @@ pub fn render_tree(snapshot: &WorkspaceSnapshot, pids: &BTreeMap<u32, u64>) -> S
     }
 
     out
+}
+
+/// Renders a Tab's Panes: a single Pane is one indented surface line, a Split
+/// is a `split <axis> <ratio>` line with its children indented under it.
+fn render_layout(
+    layout: &Layout,
+    depth: usize,
+    by_id: &BTreeMap<SurfaceId, &SurfaceMeta>,
+    pids: &BTreeMap<u32, u64>,
+    attached: &mut BTreeSet<SurfaceId>,
+    out: &mut String,
+) {
+    let indent = "  ".repeat(depth);
+    match layout {
+        Layout::Leaf { surface } => {
+            attached.insert(*surface);
+            let line = match by_id.get(surface) {
+                Some(meta) => surface_line(meta, pids.get(&surface.get()).copied()),
+                None => format!("surface {surface} <not in the surfaces list>"),
+            };
+            out.push_str(&format!("{indent}{line}\n"));
+        }
+        Layout::Split {
+            axis,
+            ratio,
+            first,
+            second,
+        } => {
+            let axis = match axis {
+                SplitAxis::Row => "row",
+                SplitAxis::Column => "column",
+            };
+            out.push_str(&format!("{indent}split {axis} {:.2}\n", ratio.as_f32()));
+            render_layout(first, depth + 1, by_id, pids, attached, out);
+            render_layout(second, depth + 1, by_id, pids, attached, out);
+        }
+    }
 }
 
 /// One surface's line: id, title, state, size, cwd and whatever else is known.
@@ -166,7 +196,7 @@ pub fn describe_state(state: &SurfaceState) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use st_proto::control::{Session, Tab, ViewState, Workspace};
+    use st_proto::control::{Session, SplitRatio, Tab, ViewState, Workspace};
     use st_proto::{SessionId, TabId};
 
     fn meta(id: u32, title: &str, cwd: Option<&str>, state: SurfaceState) -> SurfaceMeta {
@@ -194,14 +224,8 @@ mod tests {
                         name: "Default".into(),
                         active_tab: Some(TabId(12)),
                         tabs: vec![
-                            Tab {
-                                id: TabId(12),
-                                surface: SurfaceId(9),
-                            },
-                            Tab {
-                                id: TabId(13),
-                                surface: SurfaceId(10),
-                            },
+                            Tab::leaf(TabId(12), SurfaceId(9)),
+                            Tab::leaf(TabId(13), SurfaceId(10)),
                         ],
                     },
                     Session {
@@ -236,6 +260,40 @@ mod tests {
              \x20   surface 9  \"zsh\"  running  200x60  cwd=/home/sonny\n\
              \x20 tab 13\n\
              \x20   surface 10  \"vim\"  exited code=1  200x60  cwd=-\n\
+             session 2 \"notes\"\n\
+             \x20 (no tabs)\n"
+        );
+    }
+
+    #[test]
+    fn a_split_tab_lists_its_panes_under_the_splits() {
+        let mut snap = snapshot();
+        snap.surfaces
+            .push(meta(11, "top", Some("/tmp"), SurfaceState::Running));
+        snap.workspace.sessions[0].tabs[0] = Tab::with_layout(
+            TabId(12),
+            Layout::Split {
+                axis: SplitAxis::Row,
+                ratio: SplitRatio::HALF,
+                first: Box::new(Layout::leaf(SurfaceId(9))),
+                second: Box::new(Layout::Split {
+                    axis: SplitAxis::Column,
+                    ratio: SplitRatio::from_f32(0.25),
+                    first: Box::new(Layout::leaf(SurfaceId(11))),
+                    second: Box::new(Layout::leaf(SurfaceId(10))),
+                }),
+            },
+        );
+        snap.workspace.sessions[0].tabs.pop();
+        assert_eq!(
+            render_tree(&snap, &BTreeMap::new()),
+            "session 1 \"Default\" (active)\n\
+             \x20 tab 12 (active)\n\
+             \x20   split row 0.50\n\
+             \x20     surface 9  \"zsh\"  running  200x60  cwd=/home/sonny\n\
+             \x20     split column 0.25\n\
+             \x20       surface 11  \"top\"  running  200x60  cwd=/tmp\n\
+             \x20       surface 10  \"vim\"  exited code=1  200x60  cwd=-\n\
              session 2 \"notes\"\n\
              \x20 (no tabs)\n"
         );

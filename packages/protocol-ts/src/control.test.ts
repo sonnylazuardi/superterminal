@@ -89,8 +89,8 @@ test('handshake messages are constructible', () => {
 });
 
 test('proto version round-trips through its wire string', () => {
-  expect(PROTO_VERSION).toEqual({ major: 1, minor: 0 });
-  expect(PROTO_VERSION_STRING).toBe('1.0');
+  expect(PROTO_VERSION).toEqual({ major: 1, minor: 1 });
+  expect(PROTO_VERSION_STRING).toBe('1.1');
   expect(parseProtoVersion('1.0')).toEqual({ major: 1, minor: 0 });
   expect(parseProtoVersion(' 12.34 ')).toEqual({ major: 12, minor: 34 });
   expect(parseProtoVersion('nope')).toBeNull();

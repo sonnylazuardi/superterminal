@@ -24,14 +24,14 @@ use std::sync::Arc;
 
 use serde_json::{json, Value};
 use st_proto::control::{
-    Empty, ErrorBody, ErrorCode, Ev, KillSignal, Revision, Selection, SessionCreated, SessionList,
-    SurfaceCreated, TabCreated,
+    Empty, ErrorBody, ErrorCode, Ev, KillSignal, Layout, Revision, Selection, SessionCreated,
+    SessionList, SurfaceCreated, TabCreated, TabSplitResult,
 };
 use st_proto::{Req, SessionId, SurfaceId, TabId};
 use tokio::sync::{broadcast, mpsc, oneshot};
 
 use crate::metrics::{Metrics, Uptime};
-use crate::persist::{self, Persister};
+use crate::persist::{self, PersistedLayout, PersistedSurface, Persister};
 use crate::workspace::model::{Surface, SurfaceStatus, Workspace};
 use crate::workspace::spawn::{SpawnSpec, SurfaceSpawner};
 
@@ -524,10 +524,59 @@ impl WorkspaceActor {
 
             Req::TabClose { tab, .. } => {
                 let closed = self.ws.close_tab(*tab)?;
-                self.kill_surface(closed.surface, KillSignal::Hup);
+                for surface in closed.surfaces {
+                    self.kill_surface(surface, KillSignal::Hup);
+                }
                 if closed.needs_reseed {
                     self.reseed_default()?;
                 }
+                self.revision_result()
+            }
+
+            Req::TabSplit {
+                tab,
+                pane,
+                axis,
+                spawn,
+                ..
+            } => {
+                // Validate before spawning so a bad request costs no process.
+                if !self.ws.tab(*tab)?.layout.contains(*pane) {
+                    return Err(ErrorBody::new(
+                        ErrorCode::NotFound,
+                        format!("tab {tab} has no pane showing surface {pane}"),
+                    ));
+                }
+                let surface = self.spawn_surface(spawn, false)?;
+                self.ws.split_pane(*tab, *pane, *axis, surface)?;
+                let revision = self.ws.bump_revision();
+                value(TabSplitResult {
+                    tab: *tab,
+                    surface,
+                    revision,
+                })
+            }
+
+            Req::PaneClose { tab, pane, .. } => {
+                let closed = self.ws.close_pane(*tab, *pane)?;
+                match closed.tab_closed {
+                    Some(tab_closed) => {
+                        for surface in tab_closed.surfaces {
+                            self.kill_surface(surface, KillSignal::Hup);
+                        }
+                        if tab_closed.needs_reseed {
+                            self.reseed_default()?;
+                        }
+                    }
+                    None => self.kill_surface(closed.surface, KillSignal::Hup),
+                }
+                self.revision_result()
+            }
+
+            Req::TabSetRatio {
+                tab, path, ratio, ..
+            } => {
+                self.ws.set_split_ratio(*tab, path, *ratio)?;
                 self.revision_result()
             }
 
@@ -954,43 +1003,12 @@ pub fn reseed(
     for saved in &file.sessions {
         let mut tabs = Vec::new();
         for tab in &saved.tabs {
-            let cwd = saved_cwd(tab.surface.cwd.as_deref(), defaults);
-            let shell = if tab.surface.shell.is_empty() {
-                defaults.shell.clone()
-            } else {
-                tab.surface.shell.clone()
-            };
-            let spec = SpawnSpec {
-                shell,
-                cwd,
-                env: BTreeMap::new(),
-                cols: defaults.cols,
-                rows: defaults.rows,
-                seeded: true,
-            };
-            match spawner.spawn(&spec) {
-                Ok(spawned) => {
-                    metrics.surfaces_spawned.inc();
-                    ws.insert_surface(Surface {
-                        id: spawned.id,
-                        title: spawned.title.unwrap_or_else(|| tab.surface.title.clone()),
-                        user_title: tab.surface.user_title.clone(),
-                        cwd: Some(spec.cwd.display().to_string()),
-                        shell: spec.shell.clone(),
-                        cols: spec.cols,
-                        rows: spec.rows,
-                        has_foreground_child: false,
-                        status: SurfaceStatus::Running { pid: spawned.pid },
-                        view: st_proto::ViewState::default(),
-                        pristine: true,
-                    });
-                    tabs.push(crate::workspace::model::Tab {
-                        id: tab.id,
-                        surface: spawned.id,
-                    });
+            match reseed_layout(&tab.layout(), ws, spawner, defaults, metrics) {
+                Some(layout) => {
+                    tabs.push(crate::workspace::model::Tab::with_layout(tab.id, layout));
                 }
-                Err(e) => {
-                    tracing::warn!(tab = %tab.id, error = %e, "cannot re-seed tab; dropping it");
+                None => {
+                    tracing::warn!(tab = %tab.id, "cannot re-seed tab; dropping it");
                 }
             }
         }
@@ -1015,6 +1033,89 @@ pub fn reseed(
 
     if ws.sessions.iter().any(|s| s.id == file.active_session) {
         ws.active_session = file.active_session;
+    }
+}
+
+/// Re-seeds every Pane of a saved layout. A Pane whose spawn fails is
+/// dropped and its Split collapsed; `None` when no Pane could be started.
+fn reseed_layout(
+    saved: &PersistedLayout,
+    ws: &mut Workspace,
+    spawner: &dyn SurfaceSpawner,
+    defaults: &SpawnDefaults,
+    metrics: &Metrics,
+) -> Option<Layout> {
+    match saved {
+        PersistedLayout::Leaf { surface } => {
+            reseed_surface(surface, ws, spawner, defaults, metrics).map(Layout::leaf)
+        }
+        PersistedLayout::Split {
+            axis,
+            ratio,
+            first,
+            second,
+        } => {
+            let first = reseed_layout(first, ws, spawner, defaults, metrics);
+            let second = reseed_layout(second, ws, spawner, defaults, metrics);
+            match (first, second) {
+                (Some(first), Some(second)) => Some(Layout::Split {
+                    axis: *axis,
+                    ratio: *ratio,
+                    first: Box::new(first),
+                    second: Box::new(second),
+                }),
+                (Some(only), None) | (None, Some(only)) => Some(only),
+                (None, None) => None,
+            }
+        }
+    }
+}
+
+/// Spawns one saved Surface afresh in its saved cwd (or the default when
+/// that is gone) and registers it. Every re-seeded Surface starts pristine.
+fn reseed_surface(
+    saved: &PersistedSurface,
+    ws: &mut Workspace,
+    spawner: &dyn SurfaceSpawner,
+    defaults: &SpawnDefaults,
+    metrics: &Metrics,
+) -> Option<SurfaceId> {
+    let cwd = saved_cwd(saved.cwd.as_deref(), defaults);
+    let shell = if saved.shell.is_empty() {
+        defaults.shell.clone()
+    } else {
+        saved.shell.clone()
+    };
+    let spec = SpawnSpec {
+        shell,
+        cwd,
+        env: BTreeMap::new(),
+        cols: defaults.cols,
+        rows: defaults.rows,
+        seeded: true,
+    };
+    match spawner.spawn(&spec) {
+        Ok(spawned) => {
+            metrics.surfaces_spawned.inc();
+            ws.insert_surface(Surface {
+                id: spawned.id,
+                title: spawned.title.unwrap_or_else(|| saved.title.clone()),
+                user_title: saved.user_title.clone(),
+                cwd: Some(spec.cwd.display().to_string()),
+                shell: spec.shell.clone(),
+                cols: spec.cols,
+                rows: spec.rows,
+                has_foreground_child: false,
+                status: SurfaceStatus::Running { pid: spawned.pid },
+                view: st_proto::ViewState::default(),
+                pristine: true,
+            });
+            Some(spawned.id)
+        }
+        Err(e) => {
+            tracing::warn!(surface = %saved.id, error = %e, "cannot re-seed surface; dropping it");
+            None
+        }
     }
 }
 
@@ -1133,6 +1234,65 @@ mod tests {
         assert!(surface.pristine, "grilling Q42");
         assert_eq!(surface.user_title.as_deref(), Some("keep me"));
         assert!(restored.next_id() > tab.get());
+    }
+
+    #[test]
+    fn reseeding_respawns_every_pane_of_a_split_tab() {
+        use st_proto::control::{SplitAxis, SplitRatio};
+
+        let mut original = Workspace::new();
+        let spawner = NullSpawner::new();
+        let metrics = Metrics::new();
+        let mut ids = Vec::new();
+        for title in ["one", "two", "three"] {
+            let spawned = spawner.spawn(&defaults().seed_spec()).unwrap();
+            original.insert_surface(Surface {
+                id: spawned.id,
+                title: title.into(),
+                user_title: None,
+                cwd: Some("/tmp".into()),
+                shell: vec!["/bin/zsh".into()],
+                cols: 80,
+                rows: 24,
+                has_foreground_child: false,
+                status: SurfaceStatus::Running { pid: None },
+                view: st_proto::ViewState::default(),
+                pristine: true,
+            });
+            ids.push(spawned.id);
+        }
+        let (_, tab) = original.seed_default_session(ids[0]);
+        original
+            .split_pane(tab, ids[0], SplitAxis::Row, ids[1])
+            .unwrap();
+        original
+            .split_pane(tab, ids[1], SplitAxis::Column, ids[2])
+            .unwrap();
+        original
+            .set_split_ratio(tab, &[1], SplitRatio::from_f32(0.3))
+            .unwrap();
+        let file = persist::snapshot_file(&original);
+
+        let mut restored = Workspace::new();
+        reseed(&file, &mut restored, &spawner, &defaults(), &metrics);
+
+        let entry = restored.tab(tab).unwrap();
+        assert_eq!(entry.surfaces().len(), 3, "every Pane was respawned");
+        assert_eq!(entry.surface, entry.layout.first_leaf());
+        assert_eq!(restored.surfaces.len(), 3);
+        let Layout::Split { axis, second, .. } = &entry.layout else {
+            panic!("expected a split root");
+        };
+        assert_eq!(*axis, SplitAxis::Row);
+        let Layout::Split { ratio, .. } = second.as_ref() else {
+            panic!("expected a nested split");
+        };
+        assert_eq!(
+            *ratio,
+            SplitRatio::from_f32(0.3),
+            "ratios survive a restart"
+        );
+        assert!(restored.surfaces.values().all(|s| s.pristine));
     }
 
     #[test]

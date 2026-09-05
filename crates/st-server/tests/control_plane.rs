@@ -31,7 +31,7 @@ async fn a_higher_client_minor_negotiates_down() {
 
     let ack = client.hello("1.9").await;
     assert_eq!(ack["t"], "hello.ack");
-    assert_eq!(ack["proto_version"], "1.0", "negotiated minor is the lower");
+    assert_eq!(ack["proto_version"], "1.1", "negotiated minor is the lower");
 }
 
 #[tokio::test]
@@ -42,7 +42,7 @@ async fn a_major_mismatch_is_rejected() {
     let reject = client.hello("2.0").await;
     assert_eq!(reject["t"], "reject");
     assert_eq!(reject["reason"], "major_mismatch");
-    assert_eq!(reject["server_version"], "1.0");
+    assert_eq!(reject["server_version"], "1.1");
     assert!(reject["message"].as_str().unwrap().contains("2.0"));
     assert!(client.read_line().await.is_none(), "and the socket closes");
 }
@@ -467,7 +467,7 @@ async fn server_status_reports_the_daemon_and_its_metrics() {
 
     let status = client.ok(json!({ "t": "server.status" })).await;
     assert_eq!(status["build_id"], "test-build");
-    assert_eq!(status["proto_version"], "1.0");
+    assert_eq!(status["proto_version"], "1.1");
     assert_eq!(status["pid"], json!(std::process::id()));
     assert_eq!(status["surfaces"], 1);
     assert_eq!(status["control_clients"], 1);
@@ -524,4 +524,177 @@ async fn a_shutdown_notice_reaches_subscribers() {
     let event = client.next_event().await;
     assert_eq!(event["t"], "ev.server_shutting_down");
     assert_eq!(event["reason"], "test wants out");
+}
+
+#[tokio::test]
+async fn panes_are_split_resized_and_closed_and_the_last_one_closes_the_tab() {
+    let harness = Harness::start().await;
+    let mut client = harness.client().await;
+    client.ok(subscribe()).await;
+
+    let snapshot = client.ok(json!({ "t": "workspace.get" })).await;
+    let tab = snapshot["workspace"]["sessions"][0]["tabs"][0]["id"]
+        .as_u64()
+        .unwrap();
+    let first = snapshot["workspace"]["sessions"][0]["tabs"][0]["surface"]
+        .as_u64()
+        .unwrap();
+    assert_eq!(
+        snapshot["workspace"]["sessions"][0]["tabs"][0]["layout"],
+        json!({ "kind": "leaf", "surface": first }),
+        "a fresh tab is one leaf, and the layout is always on the wire"
+    );
+
+    // Split Right: the new Pane goes second, the first leaf stays `surface`.
+    let split = client
+        .ok(json!({
+            "t": "tab.split", "tab": tab, "pane": first, "axis": "row", "spawn": spawn_spec()
+        }))
+        .await;
+    assert_eq!(split["tab"], json!(tab));
+    let second = split["surface"].as_u64().unwrap();
+    assert_ne!(second, first);
+    assert_eq!(split["revision"], 1);
+
+    let event = client.next_workspace_event().await;
+    let tab_doc = &event["workspace"]["sessions"][0]["tabs"][0];
+    assert_eq!(tab_doc["surface"], json!(first));
+    assert_eq!(
+        tab_doc["layout"],
+        json!({
+            "kind": "split", "axis": "row", "ratio": 0.5,
+            "first": { "kind": "leaf", "surface": first },
+            "second": { "kind": "leaf", "surface": second },
+        })
+    );
+    assert!(
+        event["surfaces"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|s| s["id"] == json!(second)),
+        "the new Pane's surface is in the document"
+    );
+
+    // Split Down on the second Pane nests a column split under the row.
+    let third = client
+        .ok(json!({
+            "t": "tab.split", "tab": tab, "pane": second, "axis": "column", "spawn": spawn_spec()
+        }))
+        .await["surface"]
+        .as_u64()
+        .unwrap();
+    let doc = client.ok(json!({ "t": "workspace.get" })).await;
+    let layout = &doc["workspace"]["sessions"][0]["tabs"][0]["layout"];
+    assert_eq!(layout["second"]["kind"], "split");
+    assert_eq!(layout["second"]["axis"], "column");
+    assert_eq!(layout["second"]["second"]["surface"], json!(third));
+
+    // Ratios are addressed by path and clamped.
+    client
+        .ok(json!({ "t": "tab.set_ratio", "tab": tab, "path": [1], "ratio": 0.3 }))
+        .await;
+    client
+        .ok(json!({ "t": "tab.set_ratio", "tab": tab, "path": [], "ratio": 0.99 }))
+        .await;
+    let doc = client.ok(json!({ "t": "workspace.get" })).await;
+    let layout = &doc["workspace"]["sessions"][0]["tabs"][0]["layout"];
+    assert_eq!(layout["second"]["ratio"], 0.3);
+    assert_eq!(layout["ratio"], 0.9, "clamped to 0.1..=0.9");
+    let err = client
+        .err(json!({ "t": "tab.set_ratio", "tab": tab, "path": [0], "ratio": 0.5 }))
+        .await;
+    assert_eq!(err, "not_found", "a leaf has no ratio");
+    let err = client
+        .err(json!({ "t": "tab.set_ratio", "tab": tab, "path": [], "ratio": 7 }))
+        .await;
+    assert_eq!(err, "bad_request", "a ratio outside 0..=1 does not decode");
+
+    // Splitting an unknown Pane spawns nothing.
+    let err = client
+        .err(json!({
+            "t": "tab.split", "tab": tab, "pane": 999, "axis": "row", "spawn": spawn_spec()
+        }))
+        .await;
+    assert_eq!(err, "not_found");
+    let doc = client.ok(json!({ "t": "workspace.get" })).await;
+    assert_eq!(doc["surfaces"].as_array().unwrap().len(), 3);
+
+    // Closing the middle Pane collapses its Split; its surface is killed.
+    client
+        .ok(json!({ "t": "pane.close", "tab": tab, "pane": second }))
+        .await;
+    let doc = client.ok(json!({ "t": "workspace.get" })).await;
+    let tab_doc = &doc["workspace"]["sessions"][0]["tabs"][0];
+    assert_eq!(
+        tab_doc["layout"],
+        json!({
+            "kind": "split", "axis": "row", "ratio": 0.9,
+            "first": { "kind": "leaf", "surface": first },
+            "second": { "kind": "leaf", "surface": third },
+        })
+    );
+    assert!(
+        !doc["surfaces"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|s| s["id"] == json!(second)),
+        "the closed Pane's surface is gone"
+    );
+
+    // Closing the first Pane moves `surface` to the survivor.
+    client
+        .ok(json!({ "t": "pane.close", "tab": tab, "pane": first }))
+        .await;
+    let doc = client.ok(json!({ "t": "workspace.get" })).await;
+    let tab_doc = &doc["workspace"]["sessions"][0]["tabs"][0];
+    assert_eq!(tab_doc["surface"], json!(third));
+    assert_eq!(
+        tab_doc["layout"],
+        json!({ "kind": "leaf", "surface": third })
+    );
+
+    // The last Pane closing is tab.close: here that re-seeds Default (Q21).
+    client
+        .ok(json!({ "t": "pane.close", "tab": tab, "pane": third }))
+        .await;
+    let doc = client.ok(json!({ "t": "workspace.get" })).await;
+    assert_eq!(doc["workspace"]["sessions"].as_array().unwrap().len(), 1);
+    assert_ne!(doc["workspace"]["sessions"][0]["tabs"][0]["id"], json!(tab));
+    assert_eq!(doc["surfaces"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn closing_a_split_tab_kills_every_pane() {
+    let harness = Harness::start().await;
+    let mut client = harness.client().await;
+
+    let snapshot = client.ok(json!({ "t": "workspace.get" })).await;
+    let default = snapshot["workspace"]["sessions"][0]["id"].as_u64().unwrap();
+    let created = client
+        .ok(json!({ "t": "tab.create", "session": default, "spawn": spawn_spec() }))
+        .await;
+    let tab = created["tab"].as_u64().unwrap();
+    let first = created["surface"].as_u64().unwrap();
+    let second = client
+        .ok(json!({
+            "t": "tab.split", "tab": tab, "pane": first, "axis": "row", "spawn": spawn_spec()
+        }))
+        .await["surface"]
+        .as_u64()
+        .unwrap();
+    let doc = client.ok(json!({ "t": "workspace.get" })).await;
+    assert_eq!(doc["surfaces"].as_array().unwrap().len(), 3);
+
+    client.ok(json!({ "t": "tab.close", "tab": tab })).await;
+    let doc = client.ok(json!({ "t": "workspace.get" })).await;
+    let ids: Vec<u64> = doc["surfaces"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["id"].as_u64().unwrap())
+        .collect();
+    assert!(!ids.contains(&first) && !ids.contains(&second), "{ids:?}");
+    assert_eq!(ids.len(), 1, "only the seeded tab's surface is left");
 }

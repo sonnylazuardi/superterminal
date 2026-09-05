@@ -87,7 +87,9 @@ pub struct ProtoVersion {
 }
 
 /// The version implemented by this crate.
-pub const PROTO_VERSION: ProtoVersion = ProtoVersion { major: 1, minor: 0 };
+/// 1.1 added `Tab.layout`, `tab.split`, `pane.close` and `tab.set_ratio`
+/// (ADR 0009); a 1.0 peer negotiates down and sees only the first Pane.
+pub const PROTO_VERSION: ProtoVersion = ProtoVersion { major: 1, minor: 1 };
 
 impl ProtoVersion {
     /// Builds a version from its parts.
@@ -643,12 +645,17 @@ mod tests {
 
     #[test]
     fn version_negotiation() {
-        assert_eq!(PROTO_VERSION.to_string(), "1.0");
-        assert_eq!(PROTO_VERSION.to_u16(), 0x0100);
-        assert_eq!(ProtoVersion::from_u16(0x0100), PROTO_VERSION);
+        assert_eq!(PROTO_VERSION.to_string(), "1.1");
+        assert_eq!(PROTO_VERSION.to_u16(), 0x0101);
+        assert_eq!(ProtoVersion::from_u16(0x0101), PROTO_VERSION);
         assert_eq!(
             PROTO_VERSION.negotiate(ProtoVersion::new(1, 4)),
-            Some(ProtoVersion::new(1, 0))
+            Some(ProtoVersion::new(1, 1))
+        );
+        assert_eq!(
+            PROTO_VERSION.negotiate(ProtoVersion::new(1, 0)),
+            Some(ProtoVersion::new(1, 0)),
+            "a 1.0 peer negotiates down"
         );
         assert_eq!(
             ProtoVersion::new(1, 7).negotiate(ProtoVersion::new(1, 4)),
@@ -660,9 +667,9 @@ mod tests {
 
     #[test]
     fn version_is_a_string_in_json_and_a_u16_in_postcard() {
-        assert_eq!(serde_json::to_string(&PROTO_VERSION).unwrap(), "\"1.0\"");
+        assert_eq!(serde_json::to_string(&PROTO_VERSION).unwrap(), "\"1.1\"");
         assert_eq!(
-            serde_json::from_str::<ProtoVersion>("\"1.0\"").unwrap(),
+            serde_json::from_str::<ProtoVersion>("\"1.1\"").unwrap(),
             PROTO_VERSION
         );
         assert!(serde_json::from_str::<ProtoVersion>("\"x\"").is_err());
@@ -671,7 +678,7 @@ mod tests {
             postcard::from_bytes::<ProtoVersion>(&bytes).unwrap(),
             PROTO_VERSION
         );
-        assert_eq!("1.0".parse::<ProtoVersion>().unwrap(), PROTO_VERSION);
+        assert_eq!("1.1".parse::<ProtoVersion>().unwrap(), PROTO_VERSION);
         assert!("1".parse::<ProtoVersion>().is_err());
     }
 
@@ -685,7 +692,7 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&hello).unwrap(),
             serde_json::json!({
-                "proto_version": "1.0",
+                "proto_version": "1.1",
                 "client_kind": "control",
                 "build_id": "abc123-dirty",
             })

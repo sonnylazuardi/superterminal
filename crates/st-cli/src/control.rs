@@ -216,7 +216,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             line,
-            r#"{"t":"hello","proto_version":"1.0","client_kind":"tool","build_id":"test"}"#
+            r#"{"t":"hello","proto_version":"1.1","client_kind":"tool","build_id":"test"}"#
         );
         assert!(!line.contains('\n'));
     }

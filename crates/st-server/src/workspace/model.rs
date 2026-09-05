@@ -15,7 +15,8 @@
 use std::collections::BTreeMap;
 
 use st_proto::control::{
-    ErrorBody, ErrorCode, Revision, Selection, SurfaceMeta, SurfaceState, ViewState,
+    ErrorBody, ErrorCode, Layout, Revision, Selection, SplitAxis, SplitRatio, SurfaceMeta,
+    SurfaceState, ViewState,
 };
 use st_proto::{SessionId, SurfaceId, TabId, WorkspaceSnapshot};
 
@@ -110,13 +111,62 @@ impl Surface {
     }
 }
 
-/// A Tab. Exactly one Surface in v1 (grilling Q19).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// A Tab: a tree of Splits whose leaves are Panes (ADR 0009).
+///
+/// `surface` is always the first leaf of `layout`; every mutation of the
+/// layout goes through [`Tab::set_layout`] so the two cannot drift.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Tab {
     /// Tab id.
     pub id: TabId,
-    /// The Surface this Tab shows.
+    /// The first Pane's Surface.
     pub surface: SurfaceId,
+    /// The layout tree.
+    pub layout: Layout,
+}
+
+impl Tab {
+    /// A single-Pane Tab.
+    #[must_use]
+    pub fn leaf(id: TabId, surface: SurfaceId) -> Self {
+        Self {
+            id,
+            surface,
+            layout: Layout::leaf(surface),
+        }
+    }
+
+    /// A Tab with the given layout; `surface` follows its first leaf.
+    #[must_use]
+    pub fn with_layout(id: TabId, layout: Layout) -> Self {
+        Self {
+            id,
+            surface: layout.first_leaf(),
+            layout,
+        }
+    }
+
+    /// Replaces the layout, keeping `surface` at the first leaf.
+    pub fn set_layout(&mut self, layout: Layout) {
+        self.surface = layout.first_leaf();
+        self.layout = layout;
+    }
+
+    /// The Surfaces of every Pane, in tree order.
+    #[must_use]
+    pub fn surfaces(&self) -> Vec<SurfaceId> {
+        self.layout.leaves()
+    }
+
+    /// The protocol projection of this Tab.
+    #[must_use]
+    pub fn to_wire(&self) -> st_proto::Tab {
+        st_proto::Tab {
+            id: self.id,
+            surface: self.surface,
+            layout: self.layout.clone(),
+        }
+    }
 }
 
 /// A named, ordered group of Tabs.
@@ -140,14 +190,7 @@ impl Session {
             id: self.id,
             name: self.name.clone(),
             active_tab: self.active_tab,
-            tabs: self
-                .tabs
-                .iter()
-                .map(|t| st_proto::Tab {
-                    id: t.id,
-                    surface: t.surface,
-                })
-                .collect(),
+            tabs: self.tabs.iter().map(Tab::to_wire).collect(),
         }
     }
 }
@@ -155,14 +198,25 @@ impl Session {
 /// What closing a Tab implies for the processes and for the Workspace shape.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TabClosed {
-    /// The Surface whose process must be killed (grilling Q21).
-    pub surface: SurfaceId,
+    /// The Surfaces whose processes must be killed (grilling Q21): one per
+    /// Pane, in tree order.
+    pub surfaces: Vec<SurfaceId>,
     /// Set when the Tab was the last one in its Session, which therefore went
     /// away too.
     pub session_deleted: Option<SessionId>,
     /// `true` when no Session is left, so the caller must re-seed one
     /// (grilling Q21) with [`Workspace::seed_default_session`].
     pub needs_reseed: bool,
+}
+
+/// What closing one Pane implies (ADR 0009).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PaneClosed {
+    /// The Surface whose process must be killed.
+    pub surface: SurfaceId,
+    /// Set when the Pane was the Tab's last one, so the Tab closed with it
+    /// (the same cascade as `tab.close`).
+    pub tab_closed: Option<TabClosed>,
 }
 
 /// The Workspace: Sessions → Tabs → Surfaces, plus the revision counter.
@@ -302,12 +356,24 @@ impl Workspace {
             .ok_or_else(|| not_found("surface", id))
     }
 
-    /// `true` when some Tab shows `surface`.
+    /// `true` when some Pane of some Tab shows `surface`.
     #[must_use]
     pub fn surface_is_attached(&self, surface: SurfaceId) -> bool {
         self.sessions
             .iter()
-            .any(|s| s.tabs.iter().any(|t| t.surface == surface))
+            .any(|s| s.tabs.iter().any(|t| t.layout.contains(surface)))
+    }
+
+    /// Finds a Tab, or the `not_found` error the client should see.
+    pub fn tab(&self, tab: TabId) -> Result<&Tab, ErrorBody> {
+        let (si, ti) = self.locate_tab(tab)?;
+        Ok(&self.sessions[si].tabs[ti])
+    }
+
+    /// Mutable [`Workspace::tab`].
+    pub fn tab_mut(&mut self, tab: TabId) -> Result<&mut Tab, ErrorBody> {
+        let (si, ti) = self.locate_tab(tab)?;
+        Ok(&mut self.sessions[si].tabs[ti])
     }
 
     /// Surfaces whose process is still running.
@@ -395,7 +461,7 @@ impl Workspace {
             .position(|s| s.id == id)
             .ok_or_else(|| not_found("session", id))?;
         let session = self.sessions.remove(index);
-        let surfaces: Vec<SurfaceId> = session.tabs.iter().map(|t| t.surface).collect();
+        let surfaces: Vec<SurfaceId> = session.tabs.iter().flat_map(Tab::surfaces).collect();
         for surface in &surfaces {
             self.surfaces.remove(surface);
         }
@@ -429,16 +495,19 @@ impl Workspace {
     ) -> Result<(), ErrorBody> {
         let session = self.session_mut(session)?;
         let at = index.map_or(session.tabs.len(), |i| (i as usize).min(session.tabs.len()));
-        session.tabs.insert(at, Tab { id: tab, surface });
+        session.tabs.insert(at, Tab::leaf(tab, surface));
         session.active_tab = Some(tab);
         Ok(())
     }
 
-    /// Closes a Tab, applying the grilling-Q21 cascade.
+    /// Closes a Tab — every Pane of it — applying the grilling-Q21 cascade.
     pub fn close_tab(&mut self, tab: TabId) -> Result<TabClosed, ErrorBody> {
         let (si, ti) = self.locate_tab(tab)?;
         let removed = self.sessions[si].tabs.remove(ti);
-        self.surfaces.remove(&removed.surface);
+        let surfaces = removed.surfaces();
+        for surface in &surfaces {
+            self.surfaces.remove(surface);
+        }
 
         let session_id = self.sessions[si].id;
         let mut session_deleted = None;
@@ -455,10 +524,79 @@ impl Workspace {
         self.repair_active_session();
 
         Ok(TabClosed {
-            surface: removed.surface,
+            surfaces,
             session_deleted,
             needs_reseed: self.sessions.is_empty(),
         })
+    }
+
+    // ------------------------------------------------------------ panes (ADR 0009)
+
+    /// Splits the Pane of `tab` showing `pane`, putting the already spawned
+    /// `new` Surface in the new Pane (to the right for `Row`, below for
+    /// `Column`) at an even ratio.
+    pub fn split_pane(
+        &mut self,
+        tab: TabId,
+        pane: SurfaceId,
+        axis: SplitAxis,
+        new: SurfaceId,
+    ) -> Result<(), ErrorBody> {
+        let entry = self.tab_mut(tab)?;
+        let mut layout = entry.layout.clone();
+        if !layout.split_leaf(pane, axis, new) {
+            return Err(ErrorBody::new(
+                ErrorCode::NotFound,
+                format!("tab {tab} has no pane showing surface {pane}"),
+            ));
+        }
+        entry.set_layout(layout);
+        Ok(())
+    }
+
+    /// Closes the Pane of `tab` showing `pane`, collapsing its Split into
+    /// the sibling. Closing the last Pane closes the Tab ([`Workspace::close_tab`]).
+    pub fn close_pane(&mut self, tab: TabId, pane: SurfaceId) -> Result<PaneClosed, ErrorBody> {
+        let entry = self.tab_mut(tab)?;
+        match entry.layout.without_leaf(pane) {
+            None => Err(ErrorBody::new(
+                ErrorCode::NotFound,
+                format!("tab {tab} has no pane showing surface {pane}"),
+            )),
+            Some(None) => {
+                let closed = self.close_tab(tab)?;
+                Ok(PaneClosed {
+                    surface: pane,
+                    tab_closed: Some(closed),
+                })
+            }
+            Some(Some(rest)) => {
+                entry.set_layout(rest);
+                self.surfaces.remove(&pane);
+                Ok(PaneClosed {
+                    surface: pane,
+                    tab_closed: None,
+                })
+            }
+        }
+    }
+
+    /// Sets the ratio of the Split at `path` in `tab`, clamped to the range
+    /// `tab.set_ratio` allows.
+    pub fn set_split_ratio(
+        &mut self,
+        tab: TabId,
+        path: &[u8],
+        ratio: SplitRatio,
+    ) -> Result<(), ErrorBody> {
+        let entry = self.tab_mut(tab)?;
+        if !entry.layout.set_ratio(path, ratio.clamped()) {
+            return Err(ErrorBody::new(
+                ErrorCode::NotFound,
+                format!("tab {tab} has no split at path {path:?}"),
+            ));
+        }
+        Ok(())
     }
 
     /// Moves a Tab within its own Session.
@@ -644,7 +782,7 @@ mod tests {
         let mut ws = seeded();
         let tab = ws.sessions[0].tabs[0].id;
         let closed = ws.close_tab(tab).unwrap();
-        assert_eq!(closed.surface, SurfaceId(101));
+        assert_eq!(closed.surfaces, vec![SurfaceId(101)]);
         assert!(closed.session_deleted.is_some());
         assert!(closed.needs_reseed);
         assert!(ws.sessions.is_empty());
@@ -746,6 +884,91 @@ mod tests {
         assert_eq!(ws.surface(SurfaceId(101)).unwrap().view.scroll_offset, 7);
         ws.set_view_state(SurfaceId(101), None, Some(None)).unwrap();
         assert!(ws.surface(SurfaceId(101)).unwrap().view.selection.is_none());
+    }
+
+    #[test]
+    fn splitting_and_closing_panes_keeps_surface_at_the_first_leaf() {
+        let mut ws = seeded();
+        let tab = ws.sessions[0].tabs[0].id;
+        ws.insert_surface(surface(102));
+        ws.split_pane(tab, SurfaceId(101), SplitAxis::Row, SurfaceId(102))
+            .unwrap();
+        ws.insert_surface(surface(103));
+        ws.split_pane(tab, SurfaceId(102), SplitAxis::Column, SurfaceId(103))
+            .unwrap();
+
+        let entry = ws.tab(tab).unwrap();
+        assert_eq!(entry.surface, SurfaceId(101));
+        assert_eq!(
+            entry.surfaces(),
+            vec![SurfaceId(101), SurfaceId(102), SurfaceId(103)]
+        );
+        assert!(ws.surface_is_attached(SurfaceId(103)));
+        assert_eq!(
+            ws.split_pane(tab, SurfaceId(999), SplitAxis::Row, SurfaceId(1))
+                .unwrap_err()
+                .code,
+            ErrorCode::NotFound
+        );
+
+        // Closing the first Pane: the sibling subtree becomes the root and
+        // `surface` moves along.
+        let closed = ws.close_pane(tab, SurfaceId(101)).unwrap();
+        assert_eq!(closed.surface, SurfaceId(101));
+        assert!(closed.tab_closed.is_none());
+        assert!(!ws.surfaces.contains_key(&SurfaceId(101)));
+        let entry = ws.tab(tab).unwrap();
+        assert_eq!(entry.surface, SurfaceId(102));
+        assert_eq!(entry.surfaces(), vec![SurfaceId(102), SurfaceId(103)]);
+
+        ws.close_pane(tab, SurfaceId(103)).unwrap();
+        assert!(ws.tab(tab).unwrap().layout.is_leaf());
+
+        // The last Pane closes the Tab, with the Q21 cascade.
+        let closed = ws.close_pane(tab, SurfaceId(102)).unwrap();
+        let tab_closed = closed.tab_closed.unwrap();
+        assert_eq!(tab_closed.surfaces, vec![SurfaceId(102)]);
+        assert!(tab_closed.needs_reseed);
+        assert!(ws.sessions.is_empty());
+        assert!(ws.surfaces.is_empty());
+    }
+
+    #[test]
+    fn closing_a_split_tab_reports_every_pane() {
+        let mut ws = seeded();
+        let tab = ws.sessions[0].tabs[0].id;
+        ws.insert_surface(surface(102));
+        ws.split_pane(tab, SurfaceId(101), SplitAxis::Column, SurfaceId(102))
+            .unwrap();
+        let closed = ws.close_tab(tab).unwrap();
+        assert_eq!(closed.surfaces, vec![SurfaceId(101), SurfaceId(102)]);
+        assert!(ws.surfaces.is_empty());
+    }
+
+    #[test]
+    fn split_ratios_are_clamped_and_paths_validated() {
+        let mut ws = seeded();
+        let tab = ws.sessions[0].tabs[0].id;
+        assert_eq!(
+            ws.set_split_ratio(tab, &[], SplitRatio::HALF)
+                .unwrap_err()
+                .code,
+            ErrorCode::NotFound,
+            "a single Pane has no split"
+        );
+        ws.insert_surface(surface(102));
+        ws.split_pane(tab, SurfaceId(101), SplitAxis::Row, SurfaceId(102))
+            .unwrap();
+        ws.set_split_ratio(tab, &[], SplitRatio::from_f32(0.01))
+            .unwrap();
+        let Layout::Split { ratio, .. } = &ws.tab(tab).unwrap().layout else {
+            panic!("expected a split");
+        };
+        assert_eq!(*ratio, SplitRatio::MIN);
+        assert!(ws.set_split_ratio(tab, &[0], SplitRatio::HALF).is_err());
+        assert!(ws
+            .set_split_ratio(TabId(77), &[], SplitRatio::HALF)
+            .is_err());
     }
 
     #[test]

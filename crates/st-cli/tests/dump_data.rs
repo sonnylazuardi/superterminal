@@ -111,7 +111,7 @@ fn every_frame_gets_a_line_with_type_size_and_summary() {
         "{}",
         lines[0]
     );
-    assert!(lines[0].ends_with("proto=1.0 kind=Data build=\"st-cli test\""));
+    assert!(lines[0].ends_with("proto=1.1 kind=Data build=\"st-cli test\""));
 
     assert!(
         lines[1].starts_with("#1    0x0010 Attach        "),

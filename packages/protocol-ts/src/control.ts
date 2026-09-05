@@ -25,7 +25,8 @@ export interface ProtoVersion {
   minor: number;
 }
 
-export const PROTO_VERSION: ProtoVersion = { major: 1, minor: 0 };
+/** 1.1 added `Tab.layout`, `tab.split`, `pane.close`, `tab.set_ratio` (ADR 0009). */
+export const PROTO_VERSION: ProtoVersion = { major: 1, minor: 1 };
 
 export function formatProtoVersion(v: ProtoVersion): string {
   return `${v.major}.${v.minor}`;
@@ -130,10 +131,38 @@ export interface Session {
   tabs: Tab[];
 }
 
-/** Exactly one Surface per Tab in v1 (Q19). */
+/** Flex direction of a Split: `row` = side by side (Split Right), `column` = stacked (Split Down). */
+export type SplitAxis = 'row' | 'column';
+
+/**
+ * A Tab's layout tree (ADR 0009). Leaves are Panes, each showing one Surface.
+ * A Split node is addressed by its path from the root: 0 = `first`, 1 = `second`.
+ */
+export type Layout =
+  | { kind: 'leaf'; surface: SurfaceId }
+  | { kind: 'split'; axis: SplitAxis; ratio: number; first: Layout; second: Layout };
+
+/** Path of a Split node from the root: 0 = first child, 1 = second. `[]` is the root. */
+export type SplitPath = number[];
+
 export interface Tab {
   id: TabId;
+  /** The first leaf of `layout`; kept so 1.0 readers keep working. */
   surface: SurfaceId;
+  /** Absent from a 1.0 daemon: treat as `{ kind: 'leaf', surface }`. */
+  layout?: Layout;
+}
+
+/** The layout a 1.0 daemon (no `layout` field) implies. */
+export function tabLayout(tab: Tab): Layout {
+  return tab.layout ?? { kind: 'leaf', surface: tab.surface };
+}
+
+/** Surfaces of every Pane in tree order (first before second). */
+export function layoutLeaves(layout: Layout): SurfaceId[] {
+  return layout.kind === 'leaf'
+    ? [layout.surface]
+    : [...layoutLeaves(layout.first), ...layoutLeaves(layout.second)];
 }
 
 export type SurfaceState =
@@ -221,6 +250,18 @@ export type Req =
       if_revision?: number;
     }
   | { t: 'tab.set_active'; id: number; tab: TabId }
+  // panes (ADR 0009) — `pane` is the Surface shown in the Pane being split/closed
+  | {
+      t: 'tab.split';
+      id: number;
+      tab: TabId;
+      pane: SurfaceId;
+      axis: SplitAxis;
+      spawn: SpawnSpec;
+      if_revision?: number;
+    }
+  | { t: 'pane.close'; id: number; tab: TabId; pane: SurfaceId; if_revision?: number }
+  | { t: 'tab.set_ratio'; id: number; tab: TabId; path: SplitPath; ratio: number; if_revision?: number }
   // surfaces
   | { t: 'surface.create'; id: number; spawn: SpawnSpec }
   | { t: 'surface.kill'; id: number; surface: SurfaceId; signal?: Signal }
@@ -263,6 +304,10 @@ export interface ResultMap {
   'tab.reorder': { revision: number };
   'tab.move': { revision: number };
   'tab.set_active': { revision: number };
+  /** The new Pane's Surface. */
+  'tab.split': { tab: TabId; surface: SurfaceId; revision: number };
+  'pane.close': { revision: number };
+  'tab.set_ratio': { revision: number };
   'surface.create': { surface: SurfaceId };
   'surface.kill': Record<string, never>;
   'surface.rename': { revision: number };

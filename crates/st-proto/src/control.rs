@@ -154,13 +154,329 @@ pub struct Session {
     pub tabs: Vec<Tab>,
 }
 
-/// A Tab. In v1 a Tab holds exactly one Surface (grilling Q19).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// A Tab: one or more Panes arranged by Splits (ADR 0009).
+///
+/// `surface` is always the first leaf of `layout`; it is kept on the wire so
+/// 1.0 readers keep working. On decode a missing `layout` (a 1.0 daemon, or
+/// an older `workspace.json`) means `Leaf(surface)`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Tab {
     /// Tab id.
     pub id: TabId,
-    /// The Surface shown in this Tab.
+    /// The first Pane's Surface.
     pub surface: SurfaceId,
+    /// The tree of Splits whose leaves are the Tab's Panes.
+    pub layout: Layout,
+}
+
+impl Tab {
+    /// A single-Pane Tab.
+    #[must_use]
+    pub fn leaf(id: TabId, surface: SurfaceId) -> Self {
+        Self {
+            id,
+            surface,
+            layout: Layout::Leaf { surface },
+        }
+    }
+
+    /// A Tab with an arbitrary layout; `surface` is derived from it.
+    #[must_use]
+    pub fn with_layout(id: TabId, layout: Layout) -> Self {
+        Self {
+            id,
+            surface: layout.first_leaf(),
+            layout,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct TabWire {
+    id: TabId,
+    surface: SurfaceId,
+    #[serde(default)]
+    layout: Option<Layout>,
+}
+
+impl<'de> Deserialize<'de> for Tab {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let wire = TabWire::deserialize(deserializer)?;
+        let layout = wire.layout.unwrap_or(Layout::Leaf {
+            surface: wire.surface,
+        });
+        Ok(Self {
+            id: wire.id,
+            surface: wire.surface,
+            layout,
+        })
+    }
+}
+
+/// Flex direction of a Split: `row` = side by side (Split Right), `column` =
+/// stacked (Split Down). Never "vertical"/"horizontal" (CONTEXT.md).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SplitAxis {
+    /// Panes side by side.
+    Row,
+    /// Panes one above the other.
+    Column,
+}
+
+/// The share of a Split given to its `first` child, in thousandths.
+///
+/// On the wire it is a plain JSON number in `0.0..=1.0` (`0.5` for an even
+/// split); it is stored as an integer so the document stays `Eq` and the
+/// float never drifts through a round trip.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct SplitRatio(u16);
+
+impl SplitRatio {
+    /// An even split.
+    pub const HALF: Self = Self(500);
+    /// The smallest share a Pane may be given by `tab.set_ratio`.
+    pub const MIN: Self = Self(100);
+    /// The largest share a Pane may be given by `tab.set_ratio`.
+    pub const MAX: Self = Self(900);
+
+    /// Builds a ratio from a fraction, clamped to `0.0..=1.0`.
+    #[must_use]
+    pub fn from_f32(value: f32) -> Self {
+        let clamped = if value.is_finite() {
+            value.clamp(0.0, 1.0)
+        } else {
+            0.5
+        };
+        Self((clamped * 1000.0).round() as u16)
+    }
+
+    /// The fraction this ratio stands for.
+    #[must_use]
+    pub fn as_f32(self) -> f32 {
+        f32::from(self.0) / 1000.0
+    }
+
+    /// Clamps into the range `tab.set_ratio` accepts.
+    #[must_use]
+    pub fn clamped(self) -> Self {
+        Self(self.0.clamp(Self::MIN.0, Self::MAX.0))
+    }
+}
+
+impl Default for SplitRatio {
+    fn default() -> Self {
+        Self::HALF
+    }
+}
+
+impl Serialize for SplitRatio {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_f64(f64::from(self.0) / 1000.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for SplitRatio {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = f64::deserialize(deserializer)?;
+        if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+            return Err(serde::de::Error::custom(format!(
+                "split ratio {value} is not within 0.0..=1.0"
+            )));
+        }
+        Ok(Self((value * 1000.0).round() as u16))
+    }
+}
+
+/// Path of a Split node from a Tab's root: `0` = `first`, `1` = `second`.
+/// The empty path is the root.
+pub type SplitPath = Vec<u8>;
+
+/// A Tab's layout tree (ADR 0009): leaves are Panes, each showing one
+/// Surface; inner nodes are Splits.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum Layout {
+    /// One Pane.
+    Leaf {
+        /// The Surface the Pane shows.
+        surface: SurfaceId,
+    },
+    /// Two children side by side (`row`) or stacked (`column`).
+    Split {
+        /// Which way the children are laid out.
+        axis: SplitAxis,
+        /// The share of space `first` gets.
+        ratio: SplitRatio,
+        /// The left / top child.
+        first: Box<Layout>,
+        /// The right / bottom child.
+        second: Box<Layout>,
+    },
+}
+
+impl Layout {
+    /// A single Pane.
+    #[must_use]
+    pub const fn leaf(surface: SurfaceId) -> Self {
+        Self::Leaf { surface }
+    }
+
+    /// `true` for a single Pane.
+    #[must_use]
+    pub const fn is_leaf(&self) -> bool {
+        matches!(self, Self::Leaf { .. })
+    }
+
+    /// The Surfaces of every Pane, in tree order (`first` before `second`).
+    #[must_use]
+    pub fn leaves(&self) -> Vec<SurfaceId> {
+        let mut out = Vec::new();
+        self.collect_leaves(&mut out);
+        out
+    }
+
+    fn collect_leaves(&self, out: &mut Vec<SurfaceId>) {
+        match self {
+            Self::Leaf { surface } => out.push(*surface),
+            Self::Split { first, second, .. } => {
+                first.collect_leaves(out);
+                second.collect_leaves(out);
+            }
+        }
+    }
+
+    /// The Surface of the first Pane — what `Tab::surface` carries.
+    #[must_use]
+    pub fn first_leaf(&self) -> SurfaceId {
+        match self {
+            Self::Leaf { surface } => *surface,
+            Self::Split { first, .. } => first.first_leaf(),
+        }
+    }
+
+    /// Number of Panes.
+    #[must_use]
+    pub fn pane_count(&self) -> usize {
+        match self {
+            Self::Leaf { .. } => 1,
+            Self::Split { first, second, .. } => first.pane_count() + second.pane_count(),
+        }
+    }
+
+    /// `true` when some Pane shows `surface`.
+    #[must_use]
+    pub fn contains(&self, surface: SurfaceId) -> bool {
+        match self {
+            Self::Leaf { surface: s } => *s == surface,
+            Self::Split { first, second, .. } => {
+                first.contains(surface) || second.contains(surface)
+            }
+        }
+    }
+
+    /// Replaces the Pane showing `pane` with a Split holding it first and
+    /// `new` second, at an even ratio. Returns `false` when `pane` is not a
+    /// leaf of this tree.
+    pub fn split_leaf(&mut self, pane: SurfaceId, axis: SplitAxis, new: SurfaceId) -> bool {
+        match self {
+            Self::Leaf { surface } if *surface == pane => {
+                *self = Self::Split {
+                    axis,
+                    ratio: SplitRatio::HALF,
+                    first: Box::new(Self::leaf(pane)),
+                    second: Box::new(Self::leaf(new)),
+                };
+                true
+            }
+            Self::Leaf { .. } => false,
+            Self::Split { first, second, .. } => {
+                first.split_leaf(pane, axis, new) || second.split_leaf(pane, axis, new)
+            }
+        }
+    }
+
+    /// The tree with the Pane showing `pane` removed and its parent Split
+    /// collapsed into the sibling.
+    ///
+    /// * `None` — `pane` is not a leaf of this tree;
+    /// * `Some(None)` — `pane` was the only Pane, so nothing is left;
+    /// * `Some(Some(tree))` — the collapsed tree.
+    #[must_use]
+    pub fn without_leaf(&self, pane: SurfaceId) -> Option<Option<Layout>> {
+        match self {
+            Self::Leaf { surface } => (*surface == pane).then_some(None),
+            Self::Split {
+                axis,
+                ratio,
+                first,
+                second,
+            } => {
+                if let Some(rest) = first.without_leaf(pane) {
+                    return Some(Some(match rest {
+                        None => (**second).clone(),
+                        Some(first) => Self::Split {
+                            axis: *axis,
+                            ratio: *ratio,
+                            first: Box::new(first),
+                            second: second.clone(),
+                        },
+                    }));
+                }
+                if let Some(rest) = second.without_leaf(pane) {
+                    return Some(Some(match rest {
+                        None => (**first).clone(),
+                        Some(second) => Self::Split {
+                            axis: *axis,
+                            ratio: *ratio,
+                            first: first.clone(),
+                            second: Box::new(second),
+                        },
+                    }));
+                }
+                None
+            }
+        }
+    }
+
+    /// The node at `path` (`0` = first child, `1` = second), if any.
+    #[must_use]
+    pub fn node_at(&self, path: &[u8]) -> Option<&Layout> {
+        let mut node = self;
+        for step in path {
+            node = match (node, step) {
+                (Self::Split { first, .. }, 0) => first,
+                (Self::Split { second, .. }, 1) => second,
+                _ => return None,
+            };
+        }
+        Some(node)
+    }
+
+    /// Mutable [`Layout::node_at`].
+    pub fn node_at_mut(&mut self, path: &[u8]) -> Option<&mut Layout> {
+        let mut node = self;
+        for step in path {
+            node = match (node, step) {
+                (Self::Split { first, .. }, 0) => first,
+                (Self::Split { second, .. }, 1) => second,
+                _ => return None,
+            };
+        }
+        Some(node)
+    }
+
+    /// Sets the ratio of the Split at `path`. `false` when `path` does not
+    /// address a Split.
+    pub fn set_ratio(&mut self, path: &[u8], ratio: SplitRatio) -> bool {
+        match self.node_at_mut(path) {
+            Some(Self::Split { ratio: slot, .. }) => {
+                *slot = ratio;
+                true
+            }
+            _ => false,
+        }
+    }
 }
 
 /// Everything the chrome needs to know about a Surface (§3.2).
@@ -472,6 +788,54 @@ pub enum Req {
         /// Target Tab.
         tab: TabId,
     },
+    /// Split the Pane showing `pane` in `tab`, spawning a fresh Surface for
+    /// the new Pane (ADR 0009). Result: [`TabSplitResult`].
+    #[serde(rename = "tab.split")]
+    TabSplit {
+        /// Request id.
+        id: ReqId,
+        /// The Tab holding the Pane.
+        tab: TabId,
+        /// The Surface shown in the Pane being split.
+        pane: SurfaceId,
+        /// `row` puts the new Pane to the right, `column` below.
+        axis: SplitAxis,
+        /// How to spawn the new Pane's Surface.
+        spawn: SpawnSpec,
+        /// Optimistic concurrency guard.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        if_revision: Option<Revision>,
+    },
+    /// Close one Pane, killing its Surface and collapsing its Split; closing
+    /// the last Pane is `tab.close`. Result: [`RevisionResult`].
+    #[serde(rename = "pane.close")]
+    PaneClose {
+        /// Request id.
+        id: ReqId,
+        /// The Tab holding the Pane.
+        tab: TabId,
+        /// The Surface shown in the Pane to close.
+        pane: SurfaceId,
+        /// Optimistic concurrency guard.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        if_revision: Option<Revision>,
+    },
+    /// Set the ratio of one Split, addressed by its [`SplitPath`]. The value
+    /// is clamped to `0.1..=0.9`. Result: [`RevisionResult`].
+    #[serde(rename = "tab.set_ratio")]
+    TabSetRatio {
+        /// Request id.
+        id: ReqId,
+        /// The Tab holding the Split.
+        tab: TabId,
+        /// Path from the root: `0` = first child, `1` = second.
+        path: SplitPath,
+        /// The share of space the first child gets.
+        ratio: SplitRatio,
+        /// Optimistic concurrency guard.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        if_revision: Option<Revision>,
+    },
     /// Spawn a detached Surface that `tab.create` can adopt.
     /// Result: [`SurfaceCreated`].
     #[serde(rename = "surface.create")]
@@ -558,6 +922,9 @@ impl Req {
             | Req::TabReorder { id, .. }
             | Req::TabMove { id, .. }
             | Req::TabSetActive { id, .. }
+            | Req::TabSplit { id, .. }
+            | Req::PaneClose { id, .. }
+            | Req::TabSetRatio { id, .. }
             | Req::SurfaceCreate { id, .. }
             | Req::SurfaceKill { id, .. }
             | Req::SurfaceRename { id, .. }
@@ -577,7 +944,10 @@ impl Req {
             | Req::TabCreate { if_revision, .. }
             | Req::TabClose { if_revision, .. }
             | Req::TabReorder { if_revision, .. }
-            | Req::TabMove { if_revision, .. } => *if_revision,
+            | Req::TabMove { if_revision, .. }
+            | Req::TabSplit { if_revision, .. }
+            | Req::PaneClose { if_revision, .. }
+            | Req::TabSetRatio { if_revision, .. } => *if_revision,
             _ => None,
         }
     }
@@ -598,6 +968,9 @@ impl Req {
             Req::TabReorder { .. } => "tab.reorder",
             Req::TabMove { .. } => "tab.move",
             Req::TabSetActive { .. } => "tab.set_active",
+            Req::TabSplit { .. } => "tab.split",
+            Req::PaneClose { .. } => "pane.close",
+            Req::TabSetRatio { .. } => "tab.set_ratio",
             Req::SurfaceCreate { .. } => "surface.create",
             Req::SurfaceKill { .. } => "surface.kill",
             Req::SurfaceRename { .. } => "surface.rename",
@@ -639,6 +1012,17 @@ pub struct TabCreated {
     /// The new Tab.
     pub tab: TabId,
     /// The Surface it holds (spawned or adopted).
+    pub surface: SurfaceId,
+    /// The new Workspace revision.
+    pub revision: Revision,
+}
+
+/// Result of `tab.split` (ADR 0009).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TabSplitResult {
+    /// The Tab that was split.
+    pub tab: TabId,
+    /// The new Pane's Surface.
     pub surface: SurfaceId,
     /// The new Workspace revision.
     pub revision: Revision,
@@ -773,10 +1157,7 @@ mod tests {
                 id: SessionId(1),
                 name: "Default".into(),
                 active_tab: Some(TabId(12)),
-                tabs: vec![Tab {
-                    id: TabId(12),
-                    surface: SurfaceId(9),
-                }],
+                tabs: vec![Tab::leaf(TabId(12), SurfaceId(9))],
             }],
         }
     }
@@ -906,7 +1287,187 @@ mod tests {
                 id: 18,
                 force: Some(true),
             },
+            Req::TabSplit {
+                id: 19,
+                tab: TabId(12),
+                pane: SurfaceId(9),
+                axis: SplitAxis::Row,
+                spawn: SpawnSpec {
+                    cwd: Some("/home/sonny".into()),
+                    cols: 100,
+                    rows: 60,
+                    ..SpawnSpec::default()
+                },
+                if_revision: Some(42),
+            },
+            Req::PaneClose {
+                id: 20,
+                tab: TabId(12),
+                pane: SurfaceId(9),
+                if_revision: None,
+            },
+            Req::TabSetRatio {
+                id: 21,
+                tab: TabId(12),
+                path: vec![1, 0],
+                ratio: SplitRatio::from_f32(0.333),
+                if_revision: None,
+            },
         ]
+    }
+
+    fn sample_split() -> Layout {
+        Layout::Split {
+            axis: SplitAxis::Row,
+            ratio: SplitRatio::HALF,
+            first: Box::new(Layout::leaf(SurfaceId(1))),
+            second: Box::new(Layout::Split {
+                axis: SplitAxis::Column,
+                ratio: SplitRatio::from_f32(0.25),
+                first: Box::new(Layout::leaf(SurfaceId(2))),
+                second: Box::new(Layout::leaf(SurfaceId(3))),
+            }),
+        }
+    }
+
+    #[test]
+    fn layout_json_matches_the_contract_exactly() {
+        assert_eq!(
+            serde_json::to_string(&Layout::Split {
+                axis: SplitAxis::Row,
+                ratio: SplitRatio::HALF,
+                first: Box::new(Layout::leaf(SurfaceId(1))),
+                second: Box::new(Layout::leaf(SurfaceId(2))),
+            })
+            .unwrap(),
+            r#"{"kind":"split","axis":"row","ratio":0.5,"first":{"kind":"leaf","surface":1},"second":{"kind":"leaf","surface":2}}"#
+        );
+        let nested = sample_split();
+        let text = serde_json::to_string(&nested).unwrap();
+        assert!(text.contains(r#""axis":"column","ratio":0.25"#), "{text}");
+        assert_eq!(serde_json::from_str::<Layout>(&text).unwrap(), nested);
+    }
+
+    #[test]
+    fn a_tab_always_writes_its_layout_and_tolerates_a_missing_one() {
+        let tab = Tab::with_layout(TabId(12), sample_split());
+        assert_eq!(tab.surface, SurfaceId(1), "surface is the first leaf");
+        let value = serde_json::to_value(&tab).unwrap();
+        assert_eq!(value["surface"], json!(1));
+        assert_eq!(value["layout"]["kind"], json!("split"));
+        assert_eq!(serde_json::from_value::<Tab>(value).unwrap(), tab);
+
+        let old: Tab = serde_json::from_str(r#"{"id":12,"surface":9}"#).unwrap();
+        assert_eq!(old, Tab::leaf(TabId(12), SurfaceId(9)));
+        assert_eq!(
+            serde_json::to_string(&old).unwrap(),
+            r#"{"id":12,"surface":9,"layout":{"kind":"leaf","surface":9}}"#
+        );
+    }
+
+    #[test]
+    fn split_ratio_is_a_number_in_json_and_rejects_nonsense() {
+        assert_eq!(serde_json::to_string(&SplitRatio::HALF).unwrap(), "0.5");
+        assert_eq!(
+            serde_json::from_str::<SplitRatio>("0.3333333").unwrap(),
+            SplitRatio::from_f32(0.333)
+        );
+        assert!(serde_json::from_str::<SplitRatio>("1.5").is_err());
+        assert!(serde_json::from_str::<SplitRatio>("-0.1").is_err());
+        assert!(serde_json::from_str::<SplitRatio>("\"x\"").is_err());
+        assert_eq!(SplitRatio::from_f32(0.01).clamped(), SplitRatio::MIN);
+        assert_eq!(SplitRatio::from_f32(0.99).clamped(), SplitRatio::MAX);
+        assert_eq!(SplitRatio::from_f32(f32::NAN), SplitRatio::HALF);
+    }
+
+    #[test]
+    fn layout_leaves_split_collapse_and_paths() {
+        let mut layout = Layout::leaf(SurfaceId(1));
+        assert!(layout.split_leaf(SurfaceId(1), SplitAxis::Row, SurfaceId(2)));
+        assert!(layout.split_leaf(SurfaceId(2), SplitAxis::Column, SurfaceId(3)));
+        assert!(!layout.split_leaf(SurfaceId(99), SplitAxis::Row, SurfaceId(4)));
+        assert_eq!(
+            layout.leaves(),
+            vec![SurfaceId(1), SurfaceId(2), SurfaceId(3)]
+        );
+        assert_eq!(layout.first_leaf(), SurfaceId(1));
+        assert_eq!(layout.pane_count(), 3);
+        assert!(layout.contains(SurfaceId(3)));
+        assert!(!layout.contains(SurfaceId(4)));
+
+        assert!(matches!(layout.node_at(&[]), Some(Layout::Split { .. })));
+        assert_eq!(layout.node_at(&[0]), Some(&Layout::leaf(SurfaceId(1))));
+        assert_eq!(layout.node_at(&[1, 1]), Some(&Layout::leaf(SurfaceId(3))));
+        assert_eq!(layout.node_at(&[1, 1, 0]), None);
+        assert_eq!(layout.node_at(&[2]), None);
+
+        assert!(layout.set_ratio(&[1], SplitRatio::from_f32(0.7)));
+        assert!(
+            !layout.set_ratio(&[0], SplitRatio::HALF),
+            "a leaf has no ratio"
+        );
+        assert!(!layout.set_ratio(&[5], SplitRatio::HALF));
+        let Some(Layout::Split { ratio, .. }) = layout.node_at(&[1]) else {
+            panic!("expected a split at [1]");
+        };
+        assert_eq!(*ratio, SplitRatio::from_f32(0.7));
+
+        // Closing the middle Pane collapses its Split into the sibling.
+        let collapsed = layout.without_leaf(SurfaceId(2)).unwrap().unwrap();
+        assert_eq!(collapsed.leaves(), vec![SurfaceId(1), SurfaceId(3)]);
+        assert!(matches!(
+            collapsed,
+            Layout::Split {
+                axis: SplitAxis::Row,
+                ..
+            }
+        ));
+        // Closing the first Pane makes the second child the root.
+        let collapsed = layout.without_leaf(SurfaceId(1)).unwrap().unwrap();
+        assert_eq!(collapsed.first_leaf(), SurfaceId(2));
+        assert_eq!(layout.without_leaf(SurfaceId(42)), None);
+        assert_eq!(
+            Layout::leaf(SurfaceId(1)).without_leaf(SurfaceId(1)),
+            Some(None)
+        );
+    }
+
+    #[test]
+    fn the_pane_requests_match_the_contract() {
+        let split: Req = serde_json::from_str(
+            r#"{"t":"tab.split","id":3,"tab":12,"pane":9,"axis":"column","spawn":{"cwd":"/home/sonny","cols":80,"rows":24}}"#,
+        )
+        .unwrap();
+        assert_eq!(split.tag(), "tab.split");
+        let Req::TabSplit { axis, pane, .. } = split else {
+            panic!("expected tab.split");
+        };
+        assert_eq!(axis, SplitAxis::Column);
+        assert_eq!(pane, SurfaceId(9));
+
+        let close: Req =
+            serde_json::from_str(r#"{"t":"pane.close","id":4,"tab":12,"pane":9}"#).unwrap();
+        assert_eq!(close.tag(), "pane.close");
+
+        let ratio: Req = serde_json::from_str(
+            r#"{"t":"tab.set_ratio","id":5,"tab":12,"path":[1,0],"ratio":0.3}"#,
+        )
+        .unwrap();
+        let Req::TabSetRatio { path, ratio, .. } = ratio else {
+            panic!("expected tab.set_ratio");
+        };
+        assert_eq!(path, vec![1, 0]);
+        assert_eq!(ratio, SplitRatio::from_f32(0.3));
+
+        assert_eq!(
+            serde_json::to_value(TabSplitResult {
+                tab: TabId(12),
+                surface: SurfaceId(10),
+                revision: 43,
+            })
+            .unwrap(),
+            json!({"tab":12,"surface":10,"revision":43})
+        );
     }
 
     pub(crate) fn every_event() -> Vec<Ev> {
