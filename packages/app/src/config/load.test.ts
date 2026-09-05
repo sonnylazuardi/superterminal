@@ -24,7 +24,7 @@ describe('defaults', () => {
 
   test('the default config matches the documented values', () => {
     expect(DEFAULT_CONFIG.font).toEqual({ size: 13, lineHeight: 1.2 });
-    expect(DEFAULT_CONFIG.window).toEqual({ background: 'auto', verticalTabs: true });
+    expect(DEFAULT_CONFIG.window).toEqual({ background: 'auto', verticalTabs: true, remember: true });
     expect(DEFAULT_CONFIG.terminal.scrollbackLines).toBe(10_000);
     expect(DEFAULT_CONFIG.terminal.boldIsBright).toBe(false);
     expect(DEFAULT_CONFIG.theme).toEqual({});

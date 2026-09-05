@@ -11,6 +11,7 @@ import { buildRegistry, type CommandRegistry } from './commands/registry.js';
 import type { AppBridge, CommandContext } from './commands/types.js';
 import { loadConfigAndWarn } from './config/load.js';
 import type { Config } from './config/schema.js';
+import { EMPTY_CLIENT_STATE, loadClientState, type ClientState } from './state/client-state.js';
 import { ControlClient } from './control/client.js';
 import { detectPlatform, type PlatformInfo } from './platform/detect.js';
 import { createCommandBus, createNativeBridge, type NativeCommandBus } from './native/bridge.js';
@@ -34,6 +35,10 @@ export interface Bootstrapped {
   commandBus: NativeCommandBus;
   commandContext: CommandContext;
   socketPath: string;
+  /** What this Client remembered from its last run (ADR 0008). */
+  clientState: ClientState;
+  /** Where Client State is written; null when `window.remember = false`. */
+  clientStatePath: string | null;
 }
 
 export interface BootstrapOptions {
@@ -51,8 +56,21 @@ export function bootstrap(options: BootstrapOptions): Bootstrapped {
   log(`window background: ${background}`);
   const tokens = tokensFor(background);
 
+  // Client State wins over Config; Config seeds the first run (ADR 0008).
+  const remembered = config.window.remember ? loadClientState() : null;
+  for (const warning of remembered?.warnings ?? []) process.stderr.write(`${warning}\n`);
+  const clientState = remembered?.state ?? EMPTY_CLIENT_STATE;
+  log(`client state: ${remembered ? remembered.path : '(disabled)'} ${JSON.stringify(clientState)}`);
+
   const store = options.useGlobalStore ? getOrCreateGlobalStore() : createWorkspaceStore();
-  store.dispatch({ type: 'ui.setVerticalTabs', value: config.window.verticalTabs });
+  store.dispatch({
+    type: 'ui.setVerticalTabs',
+    value: clientState.verticalTabs ?? config.window.verticalTabs,
+  });
+  store.dispatch({
+    type: 'ui.setSidebarWidth',
+    width: clientState.sidebarWidth ?? tokens.strip.verticalWidth,
+  });
 
   const socketPath = argv.socket ?? defaultSocketPath();
   const client = new ControlClient({
@@ -106,6 +124,8 @@ export function bootstrap(options: BootstrapOptions): Bootstrapped {
     commandBus,
     commandContext,
     socketPath,
+    clientState,
+    clientStatePath: remembered ? remembered.path : null,
   };
 }
 

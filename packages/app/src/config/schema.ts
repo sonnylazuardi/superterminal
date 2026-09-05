@@ -40,6 +40,12 @@ export const WindowSchema = z
     verticalTabs: z.boolean().default(true),
     width: z.number().positive().optional(),
     height: z.number().positive().optional(),
+    /**
+     * Remember the last window size and tab layout across launches (Client
+     * State, ADR 0008). When true, what was remembered wins over `width`,
+     * `height` and `verticalTabs` above, which then only seed the first run.
+     */
+    remember: z.boolean().default(true),
   })
   .prefault({});
 

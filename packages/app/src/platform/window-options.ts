@@ -55,13 +55,39 @@ export function resolveBackground(
   return resolveLinuxBackground(config.window.background, platform);
 }
 
-export function buildWindowOptions(config: Config, platform: PlatformInfo): WindowOptions {
+/**
+ * The size to open at. Client State (the last size, ADR 0008) wins over
+ * Config, which wins over gpuix's 800×600 default. Whatever the source, it
+ * is clamped to the minimum: a remembered size below it would open a window
+ * the user could not have made.
+ */
+export function resolveInitialSize(
+  config: Config,
+  remembered: { width: number; height: number } | null,
+): { width: number; height: number } | null {
+  const size =
+    remembered ??
+    (config.window.width && config.window.height
+      ? { width: config.window.width, height: config.window.height }
+      : null);
+  if (!size) return null;
+  return {
+    width: Math.max(MIN_WIDTH, Math.round(size.width)),
+    height: Math.max(MIN_HEIGHT, Math.round(size.height)),
+  };
+}
+
+export function buildWindowOptions(
+  config: Config,
+  platform: PlatformInfo,
+  remembered: { width: number; height: number } | null = null,
+): WindowOptions {
   const windowBackground = resolveBackground(config, platform);
+  const size = resolveInitialSize(config, remembered);
   return {
     title: APP_TITLE,
     appName: APP_TITLE,
-    ...(config.window.width ? { width: config.window.width } : {}),
-    ...(config.window.height ? { height: config.window.height } : {}),
+    ...(size ?? {}),
     minWidth: MIN_WIDTH,
     minHeight: MIN_HEIGHT,
     windowBackground,

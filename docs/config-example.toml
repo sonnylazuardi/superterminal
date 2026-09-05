@@ -34,6 +34,16 @@ background = "auto"
 # horizontal strip has to ellipsize them after about three tabs. Set false for
 # the horizontal strip; the title bar's leftmost button toggles it at runtime.
 vertical_tabs = true
+# Initial window size in logical pixels (the paintable area, excluding the
+# platform title bar). Unset means 800 x 600.
+# width = 1200.0
+# height = 800.0
+# Remember the last window size and tab layout across launches. While true,
+# what the client remembers wins over `width`, `height` and `vertical_tabs`
+# here (they only seed the very first run); the memory lives in
+# $XDG_STATE_HOME/superterminal/client.json (%LOCALAPPDATA%\superterminal on
+# Windows). Set false to start from this file every time.
+remember = true
 
 # Pixels between the window edge and the cell grid.
 # The scrollbar is drawn inside the right padding.

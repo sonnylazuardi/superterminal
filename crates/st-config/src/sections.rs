@@ -128,7 +128,11 @@ impl Default for Padding {
 }
 
 /// `[window]` — chrome and compositing.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+///
+/// `vertical_tabs`, `width` and `height` only seed the client's first run:
+/// once the client has Client State of its own (its last size and layout),
+/// that wins while `remember` is true (ADR 0008).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct WindowConfig {
     /// Compositing mode; see [`WindowBackground`].
@@ -136,8 +140,33 @@ pub struct WindowConfig {
     /// Lay the tab strip out vertically down the left edge instead of
     /// horizontally along the top.
     pub vertical_tabs: bool,
+    /// Initial paintable width in logical pixels. Unset means the client's
+    /// default (800).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub width: Option<f64>,
+    /// Initial paintable height in logical pixels. Unset means the client's
+    /// default (600).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub height: Option<f64>,
+    /// Remember the last window size and tab layout across launches.
+    pub remember: bool,
     /// Padding around the cell grid.
     pub padding: Padding,
+}
+
+impl Default for WindowConfig {
+    fn default() -> Self {
+        Self {
+            background: WindowBackground::default(),
+            // A sidebar keeps full shell titles readable; the strip has to
+            // ellipsize them after about three tabs.
+            vertical_tabs: true,
+            width: None,
+            height: None,
+            remember: true,
+            padding: Padding::default(),
+        }
+    }
 }
 
 /// `[shell]` — what the server spawns in a new Surface (`03-server.md` §9).

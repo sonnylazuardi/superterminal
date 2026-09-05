@@ -5,6 +5,7 @@ import { detectPlatform } from './detect.js';
 import {
   buildWindowOptions,
   resolveBackground,
+  resolveInitialSize,
   resolveLinuxBackground,
   titleBarPadding,
 } from './window-options.js';
@@ -86,6 +87,29 @@ describe('buildWindowOptions', () => {
     };
     expect(buildWindowOptions(config, x11)).toMatchObject({ width: 1400, height: 900 });
     expect(buildWindowOptions(DEFAULT_CONFIG, x11).width).toBeUndefined();
+  });
+
+  test('a remembered size wins over config and is clamped to the minimum', () => {
+    const config: Config = {
+      ...DEFAULT_CONFIG,
+      window: { ...DEFAULT_CONFIG.window, width: 1400, height: 900 },
+    };
+    expect(buildWindowOptions(config, x11, { width: 1017, height: 655 })).toMatchObject({
+      width: 1017,
+      height: 655,
+    });
+    expect(resolveInitialSize(config, { width: 100, height: 100 })).toEqual({
+      width: 480,
+      height: 320,
+    });
+    expect(resolveInitialSize(config, { width: 1017.6, height: 655.2 })).toEqual({
+      width: 1018,
+      height: 655,
+    });
+    expect(resolveInitialSize(DEFAULT_CONFIG, null)).toBeNull();
+    // Config needs both dimensions; one alone is not a size.
+    const halfConfig: Config = { ...DEFAULT_CONFIG, window: { ...DEFAULT_CONFIG.window, width: 1400 } };
+    expect(resolveInitialSize(halfConfig, null)).toBeNull();
   });
 
   test('title bar padding is macOS-only', () => {

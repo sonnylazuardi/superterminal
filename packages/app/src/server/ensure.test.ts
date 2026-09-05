@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import { join } from 'node:path';
 import { startFakeServer, type FakeServer } from '../control/fake-server.js';
 import {
   ServerUnavailableError,
@@ -76,6 +77,11 @@ describe('socket paths', () => {
   test('state dir honours XDG_STATE_HOME', () => {
     expect(stateDir({ env: { XDG_STATE_HOME: '/state' } })).toBe('/state/superterminal');
     expect(stateDir({ env: { HOME: '/home/x' } })).toBe('/home/x/.local/state/superterminal');
+    // Windows has no XDG state dir and no daemon beside the client; the
+    // client's own state joins runtimeDir under %LOCALAPPDATA%.
+    expect(
+      stateDir({ platform: 'win32', env: { LOCALAPPDATA: 'C:\\Users\\x\\AppData\\Local' } }),
+    ).toBe(join('C:\\Users\\x\\AppData\\Local', 'superterminal'));
   });
 });
 

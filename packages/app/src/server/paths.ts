@@ -105,9 +105,19 @@ export function probeCandidates(input: PathEnv = {}): string[] {
   return [SOCKET_FILENAME, ...ALTERNATE_SOCKET_FILENAMES].map((name) => join(dir, name));
 }
 
-/** `$XDG_STATE_HOME/superterminal`, else `~/.local/state/superterminal` (03 §2). */
+/**
+ * `$XDG_STATE_HOME/superterminal`, else `~/.local/state/superterminal` (03 §2).
+ * On Windows there is no XDG convention and no daemon beside the client, so
+ * the client's own state goes where `runtimeDir` already goes:
+ * `%LOCALAPPDATA%\superterminal`.
+ */
 export function stateDir(input: PathEnv = {}): string {
   const env = input.env ?? process.env;
+  const platform = input.platform ?? process.platform;
+  if (platform === 'win32') {
+    const base = env['LOCALAPPDATA'] || env['TEMP'] || env['TMP'] || homedir();
+    return join(base, 'superterminal');
+  }
   const base = env['XDG_STATE_HOME'] || join(env['HOME'] || homedir(), '.local', 'state');
   return join(base, 'superterminal');
 }

@@ -55,13 +55,13 @@ describe('ControlClient handshake', () => {
     );
     const info = await client.connect();
     expect(info.pid).toBe(99);
-    expect(info.protoVersion).toBe('1.0');
+    expect(info.protoVersion).toBe('1.1');
     expect(client.state).toBe('connected');
     expect(server.latest().received[0]).toMatchObject({
       t: 'hello',
       client_kind: 'control',
       build_id: 'abc123',
-      proto_version: '1.0',
+      proto_version: '1.1',
     });
   });
 

@@ -114,7 +114,31 @@ const SECTIONS: &[Section] = &[
             ),
             key(
                 "vertical_tabs",
-                &["Put the tab strip down the left edge instead of along the top."],
+                &[
+                    "Put the tab strip down the left edge instead of along the top. Default since",
+                    "the macOS bring-up: a sidebar keeps full shell titles readable, where the",
+                    "horizontal strip has to ellipsize them after about three tabs. Set false for",
+                    "the horizontal strip; the title bar's leftmost button toggles it at runtime.",
+                ],
+            ),
+            opt_key(
+                "width",
+                &[
+                    "Initial window size in logical pixels (the paintable area, excluding the",
+                    "platform title bar). Unset means 800 x 600.",
+                ],
+                "width = 1200.0",
+            ),
+            opt_key("height", &[], "height = 800.0"),
+            key(
+                "remember",
+                &[
+                    "Remember the last window size and tab layout across launches. While true,",
+                    "what the client remembers wins over `width`, `height` and `vertical_tabs`",
+                    "here (they only seed the very first run); the memory lives in",
+                    "$XDG_STATE_HOME/superterminal/client.json (%LOCALAPPDATA%\\superterminal on",
+                    "Windows). Set false to start from this file every time.",
+                ],
             ),
         ],
     ),

@@ -41,7 +41,10 @@ fn defaults_are_the_documented_values() {
     assert_eq!(c.font.resolved_family(Platform::Linux), "DejaVu Sans Mono");
 
     assert_eq!(c.window.background, WindowBackground::Auto);
-    assert!(!c.window.vertical_tabs);
+    assert!(c.window.vertical_tabs);
+    assert_eq!(c.window.width, None);
+    assert_eq!(c.window.height, None);
+    assert!(c.window.remember);
     assert_eq!(c.window.padding.top, 8.0);
 
     assert_eq!(c.shell.program, None);
@@ -91,7 +94,10 @@ fn non_default_config_round_trips() {
     c.font.family = Some("JetBrains Mono".into());
     c.font.size = 15.5;
     c.window.background = WindowBackground::Transparent;
-    c.window.vertical_tabs = true;
+    c.window.vertical_tabs = false;
+    c.window.width = Some(1200.0);
+    c.window.height = Some(800.0);
+    c.window.remember = false;
     c.window.padding.left = 0.0;
     c.shell.program = Some("/usr/bin/fish".into());
     c.shell.args = vec!["--no-config".into()];
