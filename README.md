@@ -24,8 +24,9 @@ against a WSL server, exe + MSI included). Planning history is preserved below.
   React chrome (sidebar/strip toggle, palette, toasts, banners, keybindings),
   server auto-spawn and reconnect.
 - **Platforms**: Linux/WSLg and native Windows (MSVC build, Direct3D,
-  per-user MSI, no-console exe) live against a WSL daemon; macOS builds are
-  configured but not yet exercised on hardware.
+  per-user MSI, no-console exe) live against a WSL daemon; macOS runs on
+  Apple silicon (Metal, CoreText) and packages as an ad-hoc signed `.app` +
+  `.dmg` (`scripts/package-macos.sh` / `just dmg`).
 
 ## Run and build
 
@@ -72,21 +73,26 @@ side-by-side `.node` (`bun build --compile`, then `editbin /SUBSYSTEM:WINDOWS`
 for no-console launch) and a per-user MSI (WiX 3.11). Full chain in
 [`docs/WINDOWS.md`](./docs/WINDOWS.md).
 
-### macOS (configured, not yet run on hardware)
+### macOS (Apple silicon)
 
 ```bash
-xcode-select --install   # Metal / CoreText come with the SDK, nothing else
+xcode-select --install       # Metal / CoreText come with the SDK, nothing else
 rustup toolchain install 1.97.1
-# then the same clone → submodules → vendor-patch → build flow as Linux:
-cargo build --workspace
-(cd crates/st-native && cargo build --release)
-bun install && bun packages/app/src/app.tsx
+git submodule update --init && just vendor-patch
+./scripts/run.sh             # builds the daemon + native module, then launches
+./scripts/run.sh --no-build  # relaunch what is already built
 ```
 
-`cargo check --workspace --all-targets --target aarch64-apple-darwin` passes
-from Linux, so the non-GPU crates are cfg-correct; the native GUI build,
-traffic-light fit and blurred background still await a first Mac run
-(see `docs/DEV.md` "macOS status").
+`scripts/env.sh` picks the Darwin triple, toolchain and socket dir
+(`$TMPDIR/superterminal-<uid>`); the client falls back to Menlo when the
+generic `monospace` face is missing. Packaged form: `just dmg` (or
+`just dmg --no-build`) writes `dist/superterminal.app` and a `.dmg`, with the
+daemon and `st` beside the client, `assets/superterminal.icns` for Dock and
+Finder, and, with Xcode 26+ `actool`, a Liquid Glass `Assets.car` compiled
+from `assets/superterminal.icon`. The bundle is ad-hoc signed only: no
+Developer ID, no notarization, so a downloaded copy still trips Gatekeeper.
+Bring-up notes and the bugs the first Mac run found are in `docs/DEV.md`
+"macOS bring-up".
 
 ## Roadmap (plan → reality)
 
@@ -103,10 +109,11 @@ From [`docs/plan/07-milestones.md`](./docs/plan/07-milestones.md):
 - [x] **M4** Workspace + chrome — control-plane commands, sessions/tabs,
   palette, banners, reconnect, persistence; vertical sidebar default.
 - [~] **M5** Polish — config TOML, themes, exited UX, bell, cwd inheritance,
-  `st status`, fonts/emoji/HiDPI fixes all landed; macOS blur/traffic-light
-  fit and multi-day dogfooding still open.
-- [~] **M6** Packaging — Windows exe + per-user MSI ship and install; macOS
-  `.app`, Linux tarball, release CI, nightly perf still open.
+  `st status`, fonts/emoji/HiDPI fixes and the macOS GUI bring-up all
+  landed; macOS blur/traffic-light fit and multi-day dogfooding still open.
+- [~] **M6** Packaging — Windows exe + per-user MSI and the macOS `.app` +
+  `.dmg` (app icon, Liquid Glass) ship and install; signing/notarization,
+  Linux tarball, release CI, nightly perf still open.
 - **[+] Beyond the plan** — loopback TCP transport, Windows-client/WSL-server
   split, gpuix 0.7.0 bump, `fixing-gpuix-layout` skill, remembered window
   size / tab layout / sidebar width (Client State, ADR 0008), **split Panes**
