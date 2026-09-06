@@ -125,6 +125,11 @@ pub struct GridSnapshot {
     pub cell_width: f32,
     /// Cell height in px.
     pub cell_height: f32,
+    /// Vertical metrics of the resolved face, at the resolved font size. The
+    /// cell height is floored at `natural_line_height`, so a harness measuring
+    /// line spacing needs both numbers to tell "the multiplier won" from "the
+    /// floor won" (`geometry::CellSize::for_font`).
+    pub font_metrics: crate::geometry::FontVMetrics,
     /// Socket is up.
     pub connected: bool,
     /// `Attach` has been sent for `surface`.
@@ -151,6 +156,7 @@ impl Default for GridSnapshot {
             rows: 0,
             cell_width: 0.0,
             cell_height: 0.0,
+            font_metrics: crate::geometry::FontVMetrics::default(),
             connected: false,
             attached: false,
             modes: Modes::empty(),
@@ -192,6 +198,11 @@ impl GridSnapshot {
                 .as_ref()
                 .is_some_and(|selection| !selection.is_empty())),
             "cellSize" => json!({ "w": self.cell_width, "h": self.cell_height }),
+            "fontMetrics" => json!({
+                "ascent": self.font_metrics.ascent,
+                "descent": self.font_metrics.descent,
+                "naturalLineHeight": self.font_metrics.natural_line_height,
+            }),
             "size" => json!({ "cols": self.cols, "rows": self.rows }),
             "connected" => json!(self.connected),
             "attached" => json!(self.attached),
@@ -230,6 +241,7 @@ pub const READABLE_PROPS: &[&str] = &[
     "selectionText",
     "hasSelection",
     "cellSize",
+    "fontMetrics",
     "size",
     "connected",
     "attached",
@@ -307,6 +319,7 @@ mod tests {
             rows: 24,
             cell_width: 8.0,
             cell_height: 17.0,
+            font_metrics: crate::geometry::FontVMetrics::new(12.99, 3.3),
             content_lines: 1024,
             scroll_offset: 12,
             title: "zsh".to_string(),
@@ -336,6 +349,17 @@ mod tests {
         let size = snapshot.read("size").unwrap();
         assert_eq!(size["cols"], 80);
         assert_eq!(size["rows"], 24);
+        // f32 -> f64 through JSON is lossy (12.99f32 is 12.98999977…), so
+        // these are approximate on purpose.
+        let metrics = snapshot.read("fontMetrics").unwrap();
+        for (key, want) in [
+            ("ascent", 12.99),
+            ("descent", 3.3),
+            ("naturalLineHeight", 16.29),
+        ] {
+            let got = metrics[key].as_f64().unwrap();
+            assert!((got - want).abs() < 0.001, "{key}: {got} != {want}");
+        }
     }
 
     #[test]

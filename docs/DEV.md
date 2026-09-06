@@ -20,9 +20,16 @@ Pins, timings and verification status: `docs/PINS.md`. Test/CI policy:
 
 - **rustup**, plus the pinned toolchain: `rustup toolchain install 1.97.1`.
   Both `vendor/gpuix/rust-toolchain.toml` and `vendor/gpuix/zed/rust-toolchain.toml`
-  request 1.97.1, and rustup honours the *nearest* file, so anything built under
-  `vendor/` or in `crates/st-native` uses it whether you ask for it or not. The
-  root workspace stays on `stable`.
+  request 1.97.1, and rustup honours the *nearest* file — but **the nearest file
+  is resolved from the invocation directory, not from where the path
+  dependencies live**. `vendor/gpuix` is not an ancestor of `crates/st-native`,
+  so building there walks up to the ROOT `rust-toolchain.toml` and gets
+  `stable`. Anything under `vendor/` does get 1.97.1; `crates/st-native` does
+  not, and must name it: **`cargo +1.97.1 build --release`**. (An earlier
+  revision of this file claimed the pin was automatic. It is not; the first
+  macOS build silently ran on stable 1.98.0 because of it. `just build-native`
+  and `scripts/run.sh` now pass `+$ST_NATIVE_TOOLCHAIN` from `scripts/env.sh`.)
+  The root workspace stays on `stable`.
 - **Bun 1.4.0** (`curl -fsSL https://bun.sh/install | bash`).
 - **git ≥ 2.30** — the Zed submodule is fetched by exact SHA at `--depth 1`.
 
@@ -443,10 +450,37 @@ reached through gpuix's syntect dependency) needs an Apple-targeting C compiler.
 That is an environment limitation, not a code problem — gpuix publishes a
 darwin-arm64 prebuilt of the same dependency graph. It must be built on a Mac.
 
-Still open on macOS, none of it verified because no host was available:
+### macOS bring-up, 2026-08-31 — DONE, on an M-series host
+
+The full stack now runs on macOS arm64 (Darwin 25.6, Xcode CLT 17, 14 cores,
+24 GB): `superterminald` + PTYs + Control Plane + Data Plane + a GPUI window
+painting real cells through `<terminal-grid>`. Verified end to end with
+`./scripts/run.sh --no-build`, `st status` reporting `1 data` client, and
+`stReadProp` showing `connected/attached = true`.
+
+**HANDOVER V2 — ANSWERED, PASS.** `#[napi]` registration symbols from the
+`gpuix-native` rlib DO survive linking into our cdylib on macOS. The addon
+exports `[stReadProp, stListGrids, stReadableProps, stDataPlanePaths,
+stConnectDataPlane, TestGpuixRenderer, GpuixRenderer]` — a superset of stock
+gpuix. The thin-delegate fallback in `04-client-native.md` §1.3 is NOT needed.
+Note `TestGpuixRenderer` *is* compiled here, so macOS has the pixel/text
+introspection Linux lacks (§4).
+
+**Six bugs the first macOS launch found**, all fixed:
+
+| # | Symptom | Cause | Fix |
+|---|---|---|---|
+| 1 | `st-native` would not compile: `no method write_to_primary` | `if !cfg!(target_os = "linux")` is a *runtime* bool, so the call was still type-checked on macOS, where primary selection does not exist | `#[cfg]` attribute instead (`src/element.rs`) |
+| 2 | Window showed chrome, no cells; `WARN Unknown element type: terminal-grid` | `bunfig.toml` put `preload` under `[run]`, which Bun does not honour, so `NAPI_RS_NATIVE_LIBRARY_PATH` stayed unset and `@gpuix/react` loaded the STOCK prebuilt — our `TerminalGridFactory` was in an addon nobody dlopen'ed | top-level `preload` |
+| 3 | Client never found the daemon | 02 §1.1 says macOS uses `~/Library/Application Support`, 03 §2 says `$TMPDIR/superterminal-<uid>`. `st-config` (what the daemon and `st` actually run) implements 03 §2; only the TS client followed 02 §1.1. `ALTERNATE_SOCKET_FILENAMES` could never cover it — it varies the file name, not the directory | `packages/app/src/server/paths.ts` mirrors `Paths::runtime_dir`; the 02 §1.1 path stays a probe candidate |
+| 4 | Glyphs drifted inside their cells | `DEFAULT_FONT_FAMILY = "monospace"` is a CSS generic, not a family; CoreText missed and fell through to the proportional system UI face. Measured `cellSize.w/fontSize` = 0.83 | per-platform default (`Menlo` on macOS) + a real `FontFallbacks` chain. Ratio is now 0.602 |
+| 5 | First edit under `bun --hot` blanked the window (`Invalid hook call`, `null is not an object (evaluating 'dispatcher.useContext')`) | re-evaluated component modules bind a second copy of React while `globalThis.__stRoot` still holds the old reconciler | run the client under plain `bun`; `justfile`'s `dev` and `run.sh` no longer use `--hot`. Restarting is cheap: the terminals live in the daemon (I1) |
+| 6a | Only the FIRST keyboard shortcut ever worked; ⌘1…⌘9 / ⌘T then died silently | switching tabs remounts `<terminal-grid>` (`key={surface.id}`) and nothing refocused the replacement. GPUI delivers keys along the focus chain, so an unfocused grid means an empty chain — neither the element nor the root `onKeyDown` fires. Proven with `renderer.simulateKeyDown`: `cmd-2` logged and ran `tab.goto`, every later chord produced no event at all | `SurfaceHost` passes `focused={!paletteOpen}`; the element focuses itself when the prop changes to `true` (`props.rs` `"focused"` → `element.rs` `pending_focus`) |
+| 6b | `renderer.simulateClick` aborts the process: `cannot update GpuixView while it is already being updated` | the double-lease bug `patches/0002` fixes — but that patch only covers the **Linux** mouse path, and macOS has the same defect. Affects test support only; real clicks are fine | not fixed. Automated input tests on macOS must use `focusElement` + `simulateKeyDown` and avoid `simulateClick`; a macOS arm for `patches/0002` is the real fix |
+| 6 | `./scripts/run.sh` aborted immediately | it required a sysroot or `pkg-config fontconfig`, neither of which exists on macOS; `ST_TRIPLE` also defaulted to `linux-x64-gnu` and `env.sh` broke under zsh (`BASH_SOURCE` unset with `set -u`) | `scripts/env.sh` derives the triple and the socket per platform and works in both shells; the dep check is Linux-only |
+
+Still open on macOS:
 - `st_core::cwd::probe_process_cwd` returns `None`; the `proc_pidinfo` path is a
   TODO, so cwd tracking relies on OSC 7 alone.
-- HANDOVER V2 (do `#[napi]` registration symbols survive `-dead_strip`?) is
-  unanswered; the thin-delegate fallback in `04-client-native.md` §1.3 is the
-  contingency.
-- Nothing has ever been run on macOS. Treat the first launch as bring-up.
+- Keyboard input, selection, scrollback and the perf gate are unexercised here:
+  bring-up verified rendering and attach, not the full M2 acceptance set.

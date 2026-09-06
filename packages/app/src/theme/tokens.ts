@@ -10,6 +10,15 @@
 
 export interface Tokens {
   bg: {
+    /**
+     * The chrome's own ground: sidebar, content column, title bar, tab strip,
+     * banner, divider band. Everything that sits directly on the window
+     * backdrop rather than inside another chrome surface.
+     *
+     * This one MUST NOT be an additive white film, which is what `glass` is.
+     * See the note on `glassTokens.bg.chrome`.
+     */
+    chrome: string;
     glass: string;
     glassHover: string;
     glassActive: string;
@@ -91,6 +100,29 @@ const shared = {
 
 export const glassTokens: Tokens = {
   bg: {
+    /**
+     * A DARK scrim at 85%, not an additive white film.
+     *
+     * The rest of this palette is white-on-transparent, which only reads
+     * because something dark is assumed to be behind it. `blurred` puts the
+     * user's actual desktop there, so that assumption is wrong half the time:
+     * over a light window the 5% white film composited to near-white, and the
+     * near-white `fg.primary`, the 50%-white `fg.muted`, the 15%-white selected
+     * row and the 12%-white borders all disappeared into it. The chrome was
+     * legible over a dark editor and blank over a light one.
+     *
+     * A vibrancy material cannot fix this itself — GPUI offers only
+     * transparent/blurred/opaque, and all three transmit whatever is behind —
+     * so the chrome has to establish its own ground. At 85% the composited
+     * surface stays between #1E1E24 (over black) and about #404046 (over pure
+     * white), which keeps `fg.primary` above 9:1 and `fg.muted` near 4:1 on any
+     * backdrop. The remaining 15% is what still reads as glass.
+     *
+     * Lowering the alpha buys translucency straight out of `fg.muted`: by ~78%
+     * it is under 3.4:1 over a white backdrop. Do not go below 85% without
+     * re-checking that number.
+     */
+    chrome: '#1E1E24D9',
     glass: '#FFFFFF0D',
     glassHover: '#FFFFFF14',
     glassActive: '#FFFFFF26',
@@ -104,6 +136,9 @@ export const glassTokens: Tokens = {
 /** Linux non-blurred / `'opaque'`: the glass alphas need real colours. */
 export const opaqueTokens: Tokens = {
   bg: {
+    // Nothing shows through an opaque window, so the ground and the surface
+    // fill are the same colour here.
+    chrome: '#1E1E22',
     glass: '#1E1E22',
     glassHover: '#26262C',
     glassActive: '#2A2A30',

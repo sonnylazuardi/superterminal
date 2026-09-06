@@ -29,10 +29,15 @@ if [ -n "${WSL_DISTRO_NAME:-}" ] && [ "${ST_FORCE_WAYLAND:-0}" != "1" ] && [ -n 
   unset WAYLAND_DISPLAY
 fi
 
-if [ ! -d "$ST_SYSROOT" ] && ! pkg-config --exists fontconfig 2>/dev/null; then
-  echo "error: no GPU/dev libraries found." >&2
-  echo "  Install them (see docs/DEV.md §1) or create the sysroot (docs/DEV.md §4)." >&2
-  exit 1
+# Linux only. On macOS Metal/CoreText/AppKit ship with the SDK, there is no
+# sysroot, and pkg-config is usually not installed at all — this check used to
+# abort the launch on every Mac.
+if [ "$(uname -s)" != "Darwin" ]; then
+  if [ ! -d "$ST_SYSROOT" ] && ! pkg-config --exists fontconfig 2>/dev/null; then
+    echo "error: no GPU/dev libraries found." >&2
+    echo "  Install them (see docs/DEV.md §1) or create the sysroot (docs/DEV.md §4)." >&2
+    exit 1
+  fi
 fi
 
 if [ "$BUILD" = 1 ]; then
@@ -40,7 +45,17 @@ if [ "$BUILD" = 1 ]; then
   cargo build -p st-server -p st-cli
   if [ ! -f "${NAPI_RS_NATIVE_LIBRARY_PATH:-/nonexistent}" ]; then
     log "building the native module (first build takes several minutes)"
-    (cd crates/st-native && bun run build)
+    # Plain cargo, not `bun run build` (napi CLI): napi writes to
+    # packages/app/native/, which is NOT a path locate.ts probes, and it needs
+    # @napi-rs/cli installed. The toolchain must be named explicitly — rustup
+    # resolves rust-toolchain.toml from the invocation directory, and the
+    # nearest one to crates/st-native is the root's `stable`, not gpuix's pin.
+    (cd crates/st-native && cargo "+$ST_NATIVE_TOOLCHAIN" build --release)
+    mkdir -p packages/native
+    cp crates/st-native/target/release/libst_native.dylib \
+      "packages/native/superterminal-native.$ST_TRIPLE.node" 2>/dev/null ||
+      cp crates/st-native/target/release/libst_native.so \
+        "packages/native/superterminal-native.$ST_TRIPLE.node"
     source scripts/env.sh   # pick up the freshly built .node
   fi
 fi
@@ -65,5 +80,10 @@ else
     || { echo "daemon failed to start; see ${TMPDIR:-/tmp}/superterminald.log" >&2; exit 1; }
 fi
 
+# Plain `bun`, never `bun --hot`: hot reload re-evaluates the component modules
+# against the reconciler already held by globalThis.__stRoot, so they bind a
+# second copy of React and the first edit blanks the window with
+# "Invalid hook call" / `null is not an object (evaluating 'dispatcher.useContext')`.
+# Restarting is cheap anyway — the terminals live in the daemon (invariant I1).
 log "launching the client"
 exec bun packages/app/src/app.tsx "$@"

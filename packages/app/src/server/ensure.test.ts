@@ -36,10 +36,38 @@ describe('socket paths', () => {
     );
   });
 
-  test('macOS uses Application Support', () => {
-    expect(defaultSocketPath({ platform: 'darwin', env: { HOME: '/Users/x' } })).toBe(
-      '/Users/x/Library/Application Support/superterminal/server.sock',
+  // Regression: this used to assert `~/Library/Application Support` (02 §1.1),
+  // which no daemon ever binds — `crates/st-config` implements 03 §2 on both
+  // platforms, so the client could never find a real superterminald on macOS.
+  test('macOS uses $TMPDIR/superterminal-<uid>, matching st-config', () => {
+    expect(
+      defaultSocketPath({ platform: 'darwin', env: { HOME: '/Users/x', TMPDIR: '/var/t/' }, uid: 501 }),
+    ).toBe('/var/t/superterminal-501/server.sock');
+    expect(defaultSocketPath({ platform: 'darwin', env: { HOME: '/Users/x' }, uid: 501 })).toBe(
+      '/tmp/superterminal-501/server.sock',
     );
+  });
+
+  test('SUPERTERMINAL_RUNTIME_DIR wins over XDG_RUNTIME_DIR and $TMPDIR', () => {
+    expect(
+      defaultSocketPath({
+        platform: 'darwin',
+        env: { SUPERTERMINAL_RUNTIME_DIR: '/custom/rt', XDG_RUNTIME_DIR: '/run/user/501', TMPDIR: '/var/t' },
+      }),
+    ).toBe('/custom/rt/server.sock');
+  });
+
+  test('macOS still probes the 02 §1.1 location as a fallback', () => {
+    expect(
+      probeCandidates({ platform: 'darwin', env: { HOME: '/Users/x', TMPDIR: '/var/t' }, uid: 501 }),
+    ).toEqual([
+      '/var/t/superterminal-501/server.sock',
+      '/var/t/superterminal-501/control.sock',
+      '/var/t/superterminal-501/sock',
+      '/Users/x/Library/Application Support/superterminal/server.sock',
+      '/Users/x/Library/Application Support/superterminal/control.sock',
+      '/Users/x/Library/Application Support/superterminal/sock',
+    ]);
   });
 
   test('the alternate spellings from 02/03 are probed too', () => {
@@ -74,9 +102,15 @@ describe('socket paths', () => {
     ).toBe('C:\\Users\\x\\AppData\\Local/superterminal/server.sock');
   });
 
-  test('state dir honours XDG_STATE_HOME', () => {
+  test('state dir honours XDG_STATE_HOME, then the platform layout', () => {
     expect(stateDir({ env: { XDG_STATE_HOME: '/state' } })).toBe('/state/superterminal');
-    expect(stateDir({ env: { HOME: '/home/x' } })).toBe('/home/x/.local/state/superterminal');
+    expect(stateDir({ platform: 'linux', env: { HOME: '/home/x' } })).toBe(
+      '/home/x/.local/state/superterminal',
+    );
+    // macOS: where the daemon actually writes workspace.json (03 §2 / Paths::state_dir).
+    expect(stateDir({ platform: 'darwin', env: { HOME: '/Users/x' } })).toBe(
+      '/Users/x/Library/Application Support/superterminal',
+    );
     // Windows has no XDG state dir and no daemon beside the client; the
     // client's own state joins runtimeDir under %LOCALAPPDATA%.
     expect(

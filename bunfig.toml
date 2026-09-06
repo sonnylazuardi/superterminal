@@ -1,4 +1,10 @@
-[run]
+# Top-level, NOT under `[run]`: Bun honours `preload` at the root (and inside
+# `[test]`), but has no `[run].preload` key — with it nested there nothing was
+# preloaded, `NAPI_RS_NATIVE_LIBRARY_PATH` stayed unset, and `@gpuix/react`
+# loaded the STOCK @gpuix/native prebuilt instead of ours. The window then came
+# up with chrome but no cells, logging
+# `WARN gpuix_native::custom_elements] Unknown element type: terminal-grid`,
+# because our TerminalGridFactory lives in the addon that was never dlopen'ed.
 preload = ["./packages/app/src/native/preload.ts"]
 
 [test]

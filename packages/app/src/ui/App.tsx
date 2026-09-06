@@ -112,7 +112,7 @@ function AppFrame() {
               flexDirection: 'column',
               width: sidebarWidth,
               flexShrink: 0,
-              backgroundColor: tokens.bg.glass,
+              backgroundColor: tokens.bg.chrome,
             }}
           >
             <SidebarHeader />
@@ -147,10 +147,11 @@ function AppFrame() {
               flexGrow: 1,
               minWidth: 0,
               overflow: 'hidden',
-              // Opaque windows (Windows, X11) paint white where no element
-              // does: the content column needs its own surface, like the
-              // sidebar has. On blurred macOS this is the same glass.
-              backgroundColor: tokens.bg.glass,
+              // Every chrome column needs its own ground. On an opaque window
+              // (Windows, X11) that is because the window paints white where no
+              // element does; on a blurred one it is because the backdrop may
+              // be light. `chrome` answers both.
+              backgroundColor: tokens.bg.chrome,
             }}
           >
             <ContentHeader />
@@ -165,6 +166,10 @@ function AppFrame() {
             flexDirection: 'column',
             flexGrow: 1,
             overflow: 'hidden',
+            // The vertical layout grounds its two columns individually; here
+            // the frame is the only thing between SurfaceHost's empty state
+            // and the window backdrop.
+            backgroundColor: tokens.bg.chrome,
           }}
         >
           <TabStrip />
@@ -265,9 +270,9 @@ function ContentHeader() {
         height: tokens.strip.titleBarHeight,
         paddingLeft: tokens.strip.rowPaddingX,
         paddingRight: tokens.strip.rowPaddingX,
-        // Same opaque-window reason as the content column: without its own
-        // fill this strip shows the window's white behind the title.
-        backgroundColor: tokens.bg.glass,
+        // Same reason as the content column: without its own ground this strip
+        // shows the window backdrop behind the title.
+        backgroundColor: tokens.bg.chrome,
       }}
     >
       <div
@@ -316,7 +321,7 @@ function TitleBar() {
         gap: tokens.space.xs,
         paddingLeft: platform.isMac ? tokens.padding.trafficLights : tokens.strip.sidebarPadding,
         paddingRight: tokens.strip.sidebarPadding,
-        backgroundColor: tokens.bg.glass,
+        backgroundColor: tokens.bg.chrome,
         borderBottomWidth: tokens.border.width,
         borderColor: tokens.border.glass,
       }}

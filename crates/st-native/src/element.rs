@@ -58,6 +58,11 @@ use crate::wake::Waker;
 /// Element type string React writes as `<terminal-grid />`.
 pub const ELEMENT_TYPE: &str = "terminal-grid";
 
+/// GPUI key context the element's root div declares, so key bindings can be
+/// scoped to "a terminal grid has keyboard focus". See
+/// [`ensure_tab_reaches_the_pty`].
+pub const KEY_CONTEXT: &str = "TerminalGrid";
+
 /// Most wheel reports one event may produce. A flung trackpad can accumulate
 /// dozens of lines in a frame and xterm-style reporting has one press per
 /// line; past this the program cannot tell the difference anyway.
@@ -115,6 +120,10 @@ pub struct GridState {
 
     /// Cell metrics, recomputed when the font key changes.
     pub cell: Option<crate::geometry::CellSize>,
+    /// Vertical metrics of the resolved face, at the resolved size. Published
+    /// as `fontMetrics` because the cell height is only interpretable next to
+    /// the natural line height it is floored at (`CellSize::for_font`).
+    pub font_metrics: crate::geometry::FontVMetrics,
     /// The font key the metrics were computed for.
     pub cell_font_key: Option<(String, u32, u32)>,
     /// Last painted geometry.
@@ -197,6 +206,7 @@ impl Default for GridState {
             declared_events: HashSet::new(),
             emitter: None,
             cell: None,
+            font_metrics: crate::geometry::FontVMetrics::default(),
             cell_font_key: None,
             geometry: GridGeometry::fit(
                 0.0,
@@ -239,7 +249,15 @@ impl GridState {
         gpui::Font {
             family: self.props.font_family.clone().into(),
             features: gpui::FontFeatures::default(),
-            fallbacks: None,
+            // A user-configured family that the platform cannot resolve must
+            // degrade to another MONOSPACE face, never to the proportional
+            // system UI font (crate::props::MONOSPACE_FALLBACKS).
+            fallbacks: Some(gpui::FontFallbacks::from_fonts(
+                crate::props::MONOSPACE_FALLBACKS
+                    .iter()
+                    .map(|family| (*family).to_string())
+                    .collect(),
+            )),
             weight: if bold {
                 gpui::FontWeight::BOLD
             } else {
@@ -741,6 +759,7 @@ impl GridState {
             rows: self.geometry.rows,
             cell_width: self.geometry.cell.width,
             cell_height: self.geometry.cell.height,
+            font_metrics: self.font_metrics,
             connected: self
                 .plane
                 .as_ref()
@@ -849,6 +868,7 @@ impl CustomElement for TerminalGridElement {
 
         let focused = focus.is_focused(window);
         ensure_blink_task(&self.state, focused, cx);
+        ensure_tab_reaches_the_pty(cx);
 
         let background = crate::theme::rgba(self.state.borrow().props.palette.bg);
         let mut element = gpui::div()
@@ -856,6 +876,10 @@ impl CustomElement for TerminalGridElement {
                 "__st_terminal_grid_{}",
                 ctx.id
             )))
+            // Scopes the Tab unbind below to "a terminal grid has focus". Must
+            // be on THIS div, which is the deepest node tracking our focus
+            // handle and therefore the last context in the dispatch stack.
+            .key_context(KEY_CONTEXT)
             .relative()
             .size_full()
             .overflow_hidden()
@@ -942,6 +966,62 @@ fn ensure_wake_task(state: &mut GridState, cx: &mut gpui::Context<GpuixView>) {
             }
         }
     }));
+}
+
+/// Marker global: the unbind below is registered once per `gpui::App`.
+///
+/// A `Global` rather than a `static AtomicBool` so the flag dies with the App
+/// it describes — a process that starts a second GPUI app (the test renderer
+/// after the real one) gets a fresh keymap, and a stale process-wide flag would
+/// leave that app's Tab broken.
+struct TabUnbindInstalled;
+
+impl gpui::Global for TabUnbindInstalled {}
+
+/// Stops GPUI's focus traversal from eating Tab before the element sees it
+/// (04 §7).
+///
+/// **The bug.** gpuix binds `tab` → `FocusNext` and `shift-tab` →
+/// `FocusPrevious` with a *global* context (`vendor/gpuix/packages/native/
+/// src/renderer.rs`, `init_key_bindings`) and handles both on the root div. GPUI
+/// dispatches key *bindings* strictly before key *listeners*
+/// (`window.rs::dispatch_key_event` runs `match_result.bindings` and only falls
+/// through to `finish_dispatch_key_event` → `dispatch_key_down_up_event` if
+/// none of them consumed the event), and `dispatch_action_on_node_inner` sets
+/// `propagate_event = false` on entry to the bubble phase, so an action handler
+/// consumes by default. The root's `focus_next` therefore swallowed every Tab
+/// and `on_key_down` never fired. Nothing in `input.rs` or
+/// `st_client_core::keys` was wrong: `Key::Tab` → `b"\t"` is correct and tested,
+/// the keystroke just never arrived.
+///
+/// **Why this is the fix and not an `on_action` handler.** Consuming
+/// `FocusNext` on our own div would stop the traversal but not deliver the key —
+/// once any binding consumes the event, `dispatch_key_event` returns and the
+/// key-listener phase is skipped entirely. The event has to be kept out of the
+/// binding phase altogether. `gpui::NoAction` is GPUI's own unbind marker for
+/// exactly that: at equal context depth the later-registered binding sorts
+/// first (`keymap.rs::bindings_for_input`), and a winning `NoAction` suppresses
+/// every other binding for those keystrokes, leaving `match_result.bindings`
+/// empty so the frame falls through to `on_key_down`. A binding with no
+/// context predicate is scored at the *deepest* context depth, which is why
+/// ours needs [`KEY_CONTEXT`] on the focused node to tie with it — and why the
+/// registration has to happen after gpuix's, which it does: `init_key_bindings`
+/// runs inside `Application::run`, before any element renders.
+///
+/// Scoping to [`KEY_CONTEXT`] keeps Tab traversal working everywhere else in
+/// the app — the command palette's input above all.
+///
+/// `shift-tab` is unbound for the same reason: it encodes to `ESC [ Z`
+/// (back-tab) and the shell needs it.
+fn ensure_tab_reaches_the_pty(cx: &mut gpui::App) {
+    if cx.has_global::<TabUnbindInstalled>() {
+        return;
+    }
+    cx.set_global(TabUnbindInstalled);
+    cx.bind_keys([
+        gpui::KeyBinding::new("tab", gpui::NoAction {}, Some(KEY_CONTEXT)),
+        gpui::KeyBinding::new("shift-tab", gpui::NoAction {}, Some(KEY_CONTEXT)),
+    ]);
 }
 
 /// Starts or stops the 530 ms blink ticker (04 §6 step 6).

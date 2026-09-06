@@ -82,7 +82,7 @@ export function Banner() {
         paddingRight: tokens.space.xl,
         paddingTop: tokens.space.lg,
         paddingBottom: tokens.space.lg,
-        backgroundColor: tokens.bg.glass,
+        backgroundColor: tokens.bg.chrome,
         borderBottomWidth: tokens.border.width,
         borderColor: tokens.border.glass,
       }}

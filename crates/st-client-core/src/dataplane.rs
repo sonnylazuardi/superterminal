@@ -1883,6 +1883,8 @@ mod socket_tests {
 mod tests_support {
     //! Fixtures shared between the in-memory and the socket tests.
 
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use st_proto::{
         AbsLine, Cursor, Delta, DirtyRow, Modes, PackedCell, Row, Seq, Snapshot, Style, StyleIdx,
         SurfaceId, ViewState,
@@ -1892,15 +1894,25 @@ mod tests_support {
     /// `tempfile` dependency.
     pub struct TempDir(std::path::PathBuf);
 
+    /// Makes two TempDirs in one process distinct. Paired with the pid, that is
+    /// unique without a timestamp — see the length note in `TempDir::new`.
+    static TEMP_DIR_SEQ: AtomicUsize = AtomicUsize::new(0);
+
     impl TempDir {
         pub fn new(tag: &str) -> Self {
+            // A pid and a counter, NOT a nanosecond timestamp. A `sockaddr_un`
+            // path is capped at 104 bytes on macOS (SUN_LEN), and macOS hands
+            // every process a 49-byte $TMPDIR of its own
+            // (/var/folders/xx/<28 chars>/T/). With a 19-digit nanos suffix the
+            // bind in `handshake_attach_and_snapshot_over_a_real_socket` came
+            // out at 107 bytes and failed with "path must be shorter than
+            // SUN_LEN" on every Mac. Linux allows 108 and has a 4-byte /tmp, so
+            // it never showed there. The real socket the app binds is well
+            // under the cap; this was only ever the harness.
             let unique = format!(
                 "{tag}-{}-{}",
                 std::process::id(),
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .expect("clock")
-                    .as_nanos()
+                TEMP_DIR_SEQ.fetch_add(1, Ordering::Relaxed)
             );
             let path = std::env::temp_dir().join(unique);
             std::fs::create_dir_all(&path).expect("temp dir");
