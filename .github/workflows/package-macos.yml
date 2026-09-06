@@ -1,0 +1,119 @@
+# Build the macOS .app + .dmg on a GitHub-hosted Mac and, optionally,
+# attach the dmg to an existing GitHub release.
+#
+# Why CI and not cross-compiling from Linux: gpui_apple's build script shells
+# out to `xcrun metal`, and packaging needs `codesign`, `hdiutil` and `actool`
+# — all Xcode-only. GitHub-hosted macOS runners are free for this public repo.
+#
+# Usage: Actions → "macOS package" → Run workflow.
+#   ref:     what to build — a tag for releases (default v0.1.7), a branch
+#            for scratch builds. Submodules resolve to the pinned commits
+#            recorded at that ref, so a tag build is reproducible.
+#   publish: upload dist/*.dmg to the GitHub release named by `ref`.
+#            `ref` must be an existing release tag (e.g. v0.1.7); scratch
+#            builds leave publish off and keep the dmg as a workflow artifact.
+#
+# Speed notes (a cold GPUI build is ~700 crates):
+# - rust-cache warms both target dirs (root workspace AND the standalone
+#   st-native workspace, which has its own lockfile and target dir).
+# - Bun's install cache is cached explicitly.
+# - Release profile sets debug=0 via CARGO_PROFILE_RELEASE_DEBUG (see the
+#   package script) to skip debug-info codegen on the biggest crates.
+# - `concurrency.cancel-in-progress` keeps re-runs from stacking up.
+
+name: macOS package
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Tag or branch to build (submodule pins come from it)
+        required: true
+        default: v0.1.7
+      publish:
+        description: Attach the dmg to the GitHub release named by ref
+        required: false
+        default: true
+        type: boolean
+
+concurrency:
+  group: macos-package-${{ inputs.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  dmg:
+    name: app + dmg (macos-14, arm64)
+    runs-on: macos-14
+    # Cold GPUI release builds on 3-core runners can take most of an hour;
+    # warm runs land in minutes.
+    timeout-minutes: 150
+    steps:
+      - name: Check out requested ref with submodules
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          submodules: recursive
+          # The Zed checkout is GBs at full history; the pin is one commit.
+          fetch-depth: 1
+
+      - name: Apply the vendored gpuix patches
+        run: |
+          for p in patches/*.patch; do
+            if git -C vendor/gpuix apply --reverse --check "../../$p" 2>/dev/null; then
+              echo "already applied: $(basename "$p")"
+            else
+              git -C vendor/gpuix apply "../../$p" && echo "applied: $(basename "$p")"
+            fi
+          done
+
+      - name: Install Rust (stable covers the workspace; st-native pins itself)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Bun 1.4.0 (repo pin)
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+
+      - name: Cache cargo builds (both workspaces)
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            crates/st-native -> crates/st-native/target
+          key: macos-package-${{ hashFiles('Cargo.lock', 'crates/st-native/Cargo.lock', 'rust-toolchain.toml', 'vendor/gpuix/rust-toolchain.toml', 'docs/PINS.md') }}
+
+      - name: Cache Bun installs
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
+
+      - name: Install JS dependencies
+        run: bun install
+
+      - name: Package the app and dmg
+        run: bash scripts/package-macos.sh
+
+      - name: Show what was built
+        run: ls -lh dist/
+
+      - name: Upload the dmg
+        uses: actions/upload-artifact@v4
+        with:
+          name: superterminal-macos-arm64
+          path: dist/*.dmg
+          retention-days: 30
+
+      - name: Attach the dmg to the release
+        if: ${{ inputs.publish }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view "${{ inputs.ref }}" >/dev/null \
+            || { echo "error: no GitHub release named '${{ inputs.ref }}' — create it first or re-run with publish off"; exit 1; }
+          gh release upload "${{ inputs.ref }}" dist/*.dmg --clobber
