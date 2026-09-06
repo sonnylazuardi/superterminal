@@ -1,5 +1,7 @@
 # superterminal
 
+![superterminal on macOS: sidebar of sessions and tabs, one tab split into three panes](./assets/demo.png)
+
 A GPU‑rendered, native multiplexer terminal for Windows, Linux and Mac. Rust server (`superterminald`) owns the terminals; a Bun 1.4.0 + React client renders them through [gpuix](https://github.com/remorses/gpuix) (React bindings for Zed's GPUI) with a native Rust `<terminal-grid>` element.
 
 **Status: implemented and running.** The daemon owns live PTYs and streams
