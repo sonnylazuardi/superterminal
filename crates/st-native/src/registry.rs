@@ -38,6 +38,8 @@ pub struct StatsSnapshot {
     pub cached_runs: u32,
     /// Background quads in the last frame.
     pub bg_quads: u32,
+    /// Sprite quads (box drawing, block elements) in the last frame.
+    pub sprite_quads: u32,
     /// Lifetime shaped-run cache hits.
     pub cache_hits: u64,
     /// Lifetime shaped-run cache misses.
@@ -61,6 +63,7 @@ impl StatsSnapshot {
             shaped_runs: stats.shaped_runs,
             cached_runs: stats.cached_runs,
             bg_quads: stats.bg_quads,
+            sprite_quads: stats.sprite_quads,
             cache_hits,
             cache_misses,
             cache_hit_rate: if total == 0 {
@@ -83,6 +86,7 @@ impl StatsSnapshot {
             "shapedRuns": self.shaped_runs,
             "cachedRuns": self.cached_runs,
             "bgQuads": self.bg_quads,
+            "spriteQuads": self.sprite_quads,
             "runCacheHits": self.cache_hits,
             "runCacheMisses": self.cache_misses,
             "runCacheHitRate": round3(self.cache_hit_rate * 1000.0) / 1000.0,

@@ -192,6 +192,9 @@ function SidebarHeader() {
     <div
       testId="sidebar-header"
       style={{
+        // Chrome text is not prose: a press here must not start a text
+        // selection (gpuix `<text>` is selectable by default; this inherits).
+        userSelect: 'none',
         display: 'flex',
         flexDirection: 'row',
         alignItems: 'center',
@@ -227,6 +230,9 @@ function SidebarFooter() {
     <div
       testId="sidebar-footer"
       style={{
+        // Chrome text is not prose: a press here must not start a text
+        // selection (gpuix `<text>` is selectable by default; this inherits).
+        userSelect: 'none',
         display: 'flex',
         flexDirection: 'row',
         alignItems: 'center',
@@ -263,6 +269,9 @@ function ContentHeader() {
     <div
       testId="content-header"
       style={{
+        // Chrome text is not prose: a press here must not start a text
+        // selection (gpuix `<text>` is selectable by default; this inherits).
+        userSelect: 'none',
         display: 'flex',
         flexDirection: 'row',
         alignItems: 'center',
@@ -313,6 +322,9 @@ function TitleBar() {
     <div
       testId="titlebar"
       style={{
+        // Chrome text is not prose: a press here must not start a text
+        // selection (gpuix `<text>` is selectable by default; this inherits).
+        userSelect: 'none',
         display: 'flex',
         flexDirection: 'row',
         alignItems: 'center',

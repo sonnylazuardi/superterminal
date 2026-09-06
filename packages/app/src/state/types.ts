@@ -76,6 +76,15 @@ export interface MenuState {
   index: number;
 }
 
+/** A tab being dragged to a new position in its strip (`state/tab-drag.ts`). */
+export interface TabDragState {
+  tabId: TabId;
+  /** Index at the press. */
+  from: number;
+  /** The slot currently previewed; sent as `tab.reorder` on release. */
+  to: number;
+}
+
 /** Local live preview of a Split's ratio while its divider is dragged. */
 export interface RatioPreview {
   tabId: TabId;
@@ -95,6 +104,8 @@ export interface UiState {
   focusedPaneByTab: Record<TabId, SurfaceId>;
   menu: MenuState | null;
   ratioPreview: RatioPreview | null;
+  /** Local preview only; nothing is sent until the release. */
+  tabDrag: TabDragState | null;
   renamingSessionId: SessionId | null;
   /** Tab awaiting a "really close? something is running" confirmation. */
   confirmingCloseTabId: TabId | null;
@@ -139,6 +150,9 @@ export type UiAction =
   | { type: 'menu.move'; delta: number; count: number }
   | { type: 'ratio.preview'; tabId: TabId; path: SplitPath; ratio: number }
   | { type: 'ratio.clear' }
+  | { type: 'tabDrag.begin'; tabId: TabId; index: number }
+  | { type: 'tabDrag.to'; index: number }
+  | { type: 'tabDrag.clear' }
   | { type: 'session.beginRename'; sessionId: SessionId }
   | { type: 'session.endRename' }
   | { type: 'tab.confirmClose'; tabId: TabId | null }

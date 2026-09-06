@@ -194,9 +194,35 @@ export interface TerminalTheme {
 }
 
 /**
- * Build the `<terminal-grid theme=…>` payload from `config.theme`, which is a
- * flat `Record<string,string>` of `ansi0`…`ansi15`, `fg`, `bg`, `cursor`,
- * `cursor_text`/`cursorText`, `selection_bg`/`selectionBg`, `selection_fg`.
+ * The ANSI palette as `docs/config-example.toml` and `st-config`'s
+ * `ThemeConfig` spell it: index 0–7 by name, 8–15 as `bright_<name>`.
+ */
+const ANSI_NAMES = ['black', 'red', 'green', 'yellow', 'blue', 'magenta', 'cyan', 'white'] as const;
+
+/** The documented `[theme]` key for ANSI index `i`. */
+export function ansiKeyName(i: number): string {
+  const name = ANSI_NAMES[i % 8] ?? 'black';
+  return i < 8 ? name : `bright_${name}`;
+}
+
+/**
+ * Build the `<terminal-grid theme=…>` payload from `config.theme`, a
+ * free-form `Record<string,string>`.
+ *
+ * Two spellings are accepted for every key, because both are in use: the
+ * documented ones (`docs/config-example.toml`, and what the daemon's
+ * `ThemeConfig` deserialises to answer OSC 10/11) — `foreground`,
+ * `background`, `cursor`, `cursor_text`, `selection_background`,
+ * `selection_foreground`, `black` … `bright_white` — and the short ones the
+ * grid prop uses — `fg`, `bg`, `cursorText`/`cursor_text`,
+ * `selection_bg`/`selectionBg`, `selection_fg`/`selectionFg`, `ansi0` …
+ * `ansi15`. `ansiN` wins when both appear.
+ *
+ * This used to read only the short spellings, so a palette copied from the
+ * example parsed clean, reached the daemon, answered OSC 10/11 correctly and
+ * was dropped before the cells — with no warning on either side. Only
+ * `foreground`/`background`/`cursor`/`cursor_text` happened to match, which
+ * made it look half-applied rather than ignored.
  */
 export function buildTerminalTheme(
   overrides: Record<string, string> = {},
@@ -209,15 +235,19 @@ export function buildTerminalTheme(
     }
     return undefined;
   };
-  const ansi = DEFAULT_TERMINAL_THEME.ansi.map((fallback, i) => overrides[`ansi${i}`] ?? fallback);
-  const selectionFg = pick('selection_fg', 'selectionFg');
+  const ansi = DEFAULT_TERMINAL_THEME.ansi.map(
+    (fallback, i) => pick(`ansi${i}`, ansiKeyName(i)) ?? fallback,
+  );
+  const selectionFg = pick('selection_fg', 'selectionFg', 'selection_foreground');
   return {
     ansi,
     fg: pick('fg', 'foreground') ?? DEFAULT_TERMINAL_THEME.fg,
     bg: pick('bg', 'background') ?? DEFAULT_TERMINAL_THEME.bg,
     cursor: pick('cursor') ?? DEFAULT_TERMINAL_THEME.cursor,
     cursorText: pick('cursor_text', 'cursorText') ?? DEFAULT_TERMINAL_THEME.cursorText,
-    selectionBg: pick('selection_bg', 'selectionBg') ?? DEFAULT_TERMINAL_THEME.selectionBg,
+    selectionBg:
+      pick('selection_bg', 'selectionBg', 'selection_background') ??
+      DEFAULT_TERMINAL_THEME.selectionBg,
     ...(selectionFg ? { selectionFg } : {}),
     boldIsBright,
   };

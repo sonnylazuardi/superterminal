@@ -62,6 +62,10 @@ _Avoid_: diff, patch, update, damage (Server‑internal term for what the termin
 The lines that have scrolled off the top of a Surface's screen. Fetched by a Client on demand, not pushed.
 _Avoid_: scrollback (acceptable in UI copy only), backlog
 
+**Sprite**:
+A Box Drawing or Block Elements character (U+2500–U+259F, except the diagonals) that the Client paints from the cell box itself instead of asking the font for a glyph, so block-art logos and borders tile with no seams whatever the font or line height. See ADR 0010.
+_Avoid_: box glyph, builtin glyph, custom glyph
+
 ### Interaction
 
 **View State**:

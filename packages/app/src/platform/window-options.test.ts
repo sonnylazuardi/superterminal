@@ -153,4 +153,48 @@ describe('buildTerminalTheme', () => {
     expect(theme.selectionFg).toBe('#ffffff');
     expect(theme.boldIsBright).toBe(true);
   });
+
+  test('the documented [theme] keys from config-example.toml reach the cells', () => {
+    // Exactly what a user copies out of docs/config-example.toml (and what
+    // st-config's ThemeConfig deserialises for OSC 10/11).
+    const theme = buildTerminalTheme({
+      foreground: '#DCDCDC',
+      background: '#15191F',
+      cursor: '#FFFFFF',
+      cursor_text: '#000000',
+      selection_background: '#B3D7FF',
+      selection_foreground: '#000000',
+      black: '#14191E',
+      red: '#B43C2A',
+      green: '#00C200',
+      yellow: '#C7C400',
+      blue: '#2744C7',
+      magenta: '#C040BE',
+      cyan: '#00C5C7',
+      white: '#C7C7C7',
+      bright_black: '#686868',
+      bright_red: '#DD7975',
+      bright_green: '#58E790',
+      bright_yellow: '#ECE100',
+      bright_blue: '#A7ABF2',
+      bright_magenta: '#E17EE1',
+      bright_cyan: '#60FDFF',
+      bright_white: '#FFFFFF',
+    });
+    expect(theme.fg).toBe('#DCDCDC');
+    expect(theme.bg).toBe('#15191F');
+    expect(theme.cursorText).toBe('#000000');
+    expect(theme.selectionBg).toBe('#B3D7FF');
+    expect(theme.selectionFg).toBe('#000000');
+    expect(theme.ansi).toEqual([
+      '#14191E', '#B43C2A', '#00C200', '#C7C400', '#2744C7', '#C040BE', '#00C5C7', '#C7C7C7',
+      '#686868', '#DD7975', '#58E790', '#ECE100', '#A7ABF2', '#E17EE1', '#60FDFF', '#FFFFFF',
+    ]);
+  });
+
+  test('ansiN wins over the named key when both are given', () => {
+    const theme = buildTerminalTheme({ ansi1: '#111111', red: '#222222', bright_red: '#333333' });
+    expect(theme.ansi[1]).toBe('#111111');
+    expect(theme.ansi[9]).toBe('#333333');
+  });
 });

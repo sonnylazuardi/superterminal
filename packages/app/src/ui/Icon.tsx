@@ -122,6 +122,9 @@ export function IconButton(props: IconButtonProps) {
       testId={props.testId}
       onClick={props.onClick}
       style={{
+        // Chrome text is not prose: a press here must not start a text
+        // selection (gpuix `<text>` is selectable by default; this inherits).
+        userSelect: 'none',
         width: size,
         height: size,
         flexShrink: 0,

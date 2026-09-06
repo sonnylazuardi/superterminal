@@ -3,7 +3,9 @@
 //! Paint order, and why it is this order:
 //! 1. background quads — merged, and skipped entirely where the cell's
 //!    background is the theme default so a blurred window shows through (Q28);
-//! 2. glyph runs, through the shaped-line cache;
+//! 2. glyph runs, through the shaped-line cache — except Box Drawing and
+//!    Block Elements, which are quads from [`crate::sprites`] so a block-art
+//!    logo tiles with no seams whatever the font or line height;
 //! 3. the double-underline second stroke (gpui's `UnderlineStyle` has no
 //!    `double`, so the first stroke rides on the `TextRun` and the second is a
 //!    quad);
@@ -20,7 +22,10 @@
 
 use std::time::Instant;
 
-use gpui::{fill, point, px, size, App, Bounds, ContentMask, Pixels, Point, ShapedLine, Window};
+use gpui::{
+    fill, point, px, quad, size, App, Bounds, ContentMask, Corners, Edges, Pixels, Point,
+    ShapedLine, Window,
+};
 use st_client_core::palette::Rgb;
 use st_proto::{AbsLine, Modes, SurfaceId};
 
@@ -31,6 +36,7 @@ use crate::geometry::{
 };
 use crate::props::{CursorStyle, ScrollbarMode};
 use crate::runs::{layout_viewport, RowLayout, RunSpan, StyleKey};
+use crate::sprites::{sprite_for, Arc, Corner, Rect, Sprite};
 use crate::theme::{rgba, rgba_with_alpha};
 
 /// How many history lines one `FetchHistory` asks for (04 §4).
@@ -316,12 +322,17 @@ fn paint_glyphs(
     let line_height = px(geometry.cell.height);
     let mut shaped = 0u32;
     let mut cached = 0u32;
+    let mut sprites = 0u32;
 
     for row_index in 0..frame.rows.len() {
         for run_index in 0..frame.rows[row_index].runs.len() {
             let run = frame.rows[row_index].runs[run_index].clone();
             let (x, y) = geometry.cell_origin(run.col, row_index as u16);
             let origin = point(bounds.origin.x + px(x), bounds.origin.y + px(y));
+            if run.sprite {
+                sprites += paint_sprite_run(&run.text, run.key.fg, origin, geometry.cell, window);
+                continue;
+            }
             let line = shaped_line(
                 state,
                 &run,
@@ -352,6 +363,141 @@ fn paint_glyphs(
 
     state.stats.shaped_runs = shaped;
     state.stats.cached_runs = cached;
+    state.stats.sprite_quads = sprites;
+}
+
+/// Paints one sprite run — every cell of it a Box Drawing or Block Elements
+/// codepoint — as quads. Returns how many were painted.
+///
+/// **Edges are `round()`ed, never `ceil()`ed.** Two neighbouring cells derive
+/// their shared edge from the same grid line, so rounding both lands them on
+/// the same integer: no seam, no overlap. The background quads get away with
+/// `ceil()` because overlap there is invisible; a `ceil()`ed 1 px stroke
+/// becomes 2 px wherever it straddles a pixel boundary and the weight wobbles
+/// along a border. A rect whose rounded edges coincide is widened to 1 px
+/// rather than dropped.
+fn paint_sprite_run(
+    text: &str,
+    color: Rgb,
+    origin: Point<Pixels>,
+    cell: CellSize,
+    window: &mut Window,
+) -> u32 {
+    let mut painted = 0u32;
+    for (index, ch) in text.chars().enumerate() {
+        let cell_origin = point(origin.x + px(cell.width * index as f32), origin.y);
+        match sprite_for(ch, cell.width, cell.height) {
+            Some(Sprite::Rects { rects, alpha }) => {
+                let fill_color = rgba_with_alpha(color, alpha);
+                for rect in rects {
+                    window.paint_quad(fill(snap_rect(cell_origin, rect), fill_color));
+                    painted += 1;
+                }
+            }
+            Some(Sprite::Arc(arc)) => {
+                paint_arc(&arc, color, cell_origin, window);
+                painted += 1;
+            }
+            None => {}
+        }
+    }
+    painted
+}
+
+/// A cell-local rect placed in the window, with every edge rounded to a device
+/// pixel and a minimum extent of 1 px.
+fn snap_rect(cell_origin: Point<Pixels>, rect: Rect) -> Bounds<Pixels> {
+    let x0 = (f32::from(cell_origin.x) + rect.x).round();
+    let y0 = (f32::from(cell_origin.y) + rect.y).round();
+    let mut x1 = (f32::from(cell_origin.x) + rect.right()).round();
+    let mut y1 = (f32::from(cell_origin.y) + rect.bottom()).round();
+    if x1 <= x0 {
+        x1 = x0 + 1.0;
+    }
+    if y1 <= y0 {
+        y1 = y0 + 1.0;
+    }
+    Bounds::new(point(px(x0), px(y0)), size(px(x1 - x0), px(y1 - y0)))
+}
+
+/// `╭╮╯╰` as a real quarter circle: one quad with no fill, a border on the two
+/// edges that meet at the rounded corner, and a radius on that corner. GPUI
+/// draws the border along the rounded outline.
+fn paint_arc(arc: &Arc, color: Rgb, cell_origin: Point<Pixels>, window: &mut Window) {
+    let bounds = snap_rect(cell_origin, arc.bounds);
+    let thickness = px(arc.thickness.round().max(1.0));
+    // The radius may not exceed the quad, which rounding can have shrunk.
+    let radius = px(arc
+        .radius
+        .min(f32::from(bounds.size.width))
+        .min(f32::from(bounds.size.height)));
+    let zero = px(0.0);
+    let (corners, edges) = match arc.corner {
+        Corner::TopLeft => (
+            Corners {
+                top_left: radius,
+                top_right: zero,
+                bottom_right: zero,
+                bottom_left: zero,
+            },
+            Edges {
+                top: thickness,
+                right: zero,
+                bottom: zero,
+                left: thickness,
+            },
+        ),
+        Corner::TopRight => (
+            Corners {
+                top_left: zero,
+                top_right: radius,
+                bottom_right: zero,
+                bottom_left: zero,
+            },
+            Edges {
+                top: thickness,
+                right: thickness,
+                bottom: zero,
+                left: zero,
+            },
+        ),
+        Corner::BottomRight => (
+            Corners {
+                top_left: zero,
+                top_right: zero,
+                bottom_right: radius,
+                bottom_left: zero,
+            },
+            Edges {
+                top: zero,
+                right: thickness,
+                bottom: thickness,
+                left: zero,
+            },
+        ),
+        Corner::BottomLeft => (
+            Corners {
+                top_left: zero,
+                top_right: zero,
+                bottom_right: zero,
+                bottom_left: radius,
+            },
+            Edges {
+                top: zero,
+                right: zero,
+                bottom: thickness,
+                left: thickness,
+            },
+        ),
+    };
+    window.paint_quad(quad(
+        bounds,
+        corners,
+        gpui::transparent_black(),
+        edges,
+        rgba(color),
+        gpui::BorderStyle::Solid,
+    ));
 }
 
 /// Fetches or builds the shaped line for one run.
@@ -493,9 +639,15 @@ fn repaint_cursor_glyph(
     let Some(layout) = frame.rows.get(usize::from(row)) else {
         return;
     };
-    let Some(text) = glyph_at(layout, col) else {
+    let Some((text, sprite)) = glyph_at(layout, col) else {
         return;
     };
+    if sprite {
+        // The glyph under the cursor is one of ours: redraw it in the cursor
+        // text colour from the same geometry, not through the font.
+        paint_sprite_run(&text, text_color, origin, geometry.cell, window);
+        return;
+    }
     let text_run = gpui::TextRun {
         len: text.len(),
         font: state.font(false, false),
@@ -521,8 +673,9 @@ fn repaint_cursor_glyph(
     );
 }
 
-/// The character painted at `col`, walking the row's runs.
-fn glyph_at(layout: &RowLayout, col: u16) -> Option<String> {
+/// The character painted at `col`, walking the row's runs, and whether it is
+/// a sprite (drawn from the cell box) rather than a shaped glyph.
+fn glyph_at(layout: &RowLayout, col: u16) -> Option<(String, bool)> {
     for run in &layout.runs {
         if col < run.col || col >= run.col + run.cells {
             continue;
@@ -531,7 +684,11 @@ fn glyph_at(layout: &RowLayout, col: u16) -> Option<String> {
         if run.wide {
             offset = 0;
         }
-        return run.text.chars().nth(offset).map(String::from);
+        return run
+            .text
+            .chars()
+            .nth(offset)
+            .map(|ch| (String::from(ch), run.sprite));
     }
     None
 }
@@ -633,7 +790,12 @@ mod tests {
                 strike: false,
             },
             wide,
+            sprite: false,
         }
+    }
+
+    fn glyph(layout: &RowLayout, col: u16) -> Option<String> {
+        glyph_at(layout, col).map(|(text, _)| text)
     }
 
     #[test]
@@ -642,11 +804,11 @@ mod tests {
             backgrounds: Vec::new(),
             runs: vec![run(0, 5, "hello", false), run(6, 3, "abc", false)],
         };
-        assert_eq!(glyph_at(&layout, 0).as_deref(), Some("h"));
-        assert_eq!(glyph_at(&layout, 4).as_deref(), Some("o"));
-        assert_eq!(glyph_at(&layout, 5), None, "a gap has no glyph");
-        assert_eq!(glyph_at(&layout, 7).as_deref(), Some("b"));
-        assert_eq!(glyph_at(&layout, 99), None);
+        assert_eq!(glyph(&layout, 0).as_deref(), Some("h"));
+        assert_eq!(glyph(&layout, 4).as_deref(), Some("o"));
+        assert_eq!(glyph(&layout, 5), None, "a gap has no glyph");
+        assert_eq!(glyph(&layout, 7).as_deref(), Some("b"));
+        assert_eq!(glyph(&layout, 99), None);
     }
 
     #[test]
@@ -655,8 +817,36 @@ mod tests {
             backgrounds: Vec::new(),
             runs: vec![run(2, 2, "世", true)],
         };
-        assert_eq!(glyph_at(&layout, 2).as_deref(), Some("世"));
-        assert_eq!(glyph_at(&layout, 3).as_deref(), Some("世"));
+        assert_eq!(glyph(&layout, 2).as_deref(), Some("世"));
+        assert_eq!(glyph(&layout, 3).as_deref(), Some("世"));
+    }
+
+    #[test]
+    fn the_cursor_knows_when_it_sits_on_a_sprite() {
+        let mut block = run(0, 2, "▀▄", false);
+        block.sprite = true;
+        let layout = RowLayout {
+            backgrounds: Vec::new(),
+            runs: vec![block, run(2, 1, "x", false)],
+        };
+        assert_eq!(glyph_at(&layout, 1), Some(("▄".to_string(), true)));
+        assert_eq!(glyph_at(&layout, 2), Some(("x".to_string(), false)));
+    }
+
+    #[test]
+    fn sprite_edges_round_to_the_pixel_grid_and_never_vanish() {
+        let origin = point(px(10.3), px(20.6));
+        // A rect at cell-local (0, 0)–(7.2, 8.5): rounds to (10, 21)–(18, 29).
+        let snapped = snap_rect(origin, Rect { x: 0.0, y: 0.0, w: 7.2, h: 8.5 });
+        assert_eq!(snapped.origin, point(px(10.0), px(21.0)));
+        assert_eq!(snapped.size, size(px(8.0), px(8.0)));
+        // Two cells share the edge: cell 1's right edge and cell 2's left
+        // edge both come from origin.x + 7.2 = 17.5 → 18 (round half away).
+        let next = snap_rect(point(px(10.3 + 7.2), px(20.6)), Rect { x: 0.0, y: 0.0, w: 7.2, h: 8.5 });
+        assert_eq!(next.origin.x, snapped.origin.x + snapped.size.width);
+        // A hairline thinner than the rounding still paints 1 px.
+        let hair = snap_rect(origin, Rect { x: 0.0, y: 3.9, w: 7.2, h: 0.2 });
+        assert_eq!(hair.size.height, px(1.0));
     }
 
     #[test]

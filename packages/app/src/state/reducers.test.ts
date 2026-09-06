@@ -580,6 +580,47 @@ describe('applyUiAction', () => {
     expect(applyUiAction(cleared, { type: 'ratio.clear' })).toBe(cleared);
   });
 
+  test('a tab drag previews locally, dedupes, and clears', () => {
+    const s = split();
+    // A tab the server does not have cannot be dragged.
+    expect(applyUiAction(s, { type: 'tabDrag.begin', tabId: 404, index: 0 })).toBe(s);
+    // Nothing to move until a drag has begun.
+    expect(applyUiAction(s, { type: 'tabDrag.to', index: 1 })).toBe(s);
+    expect(applyUiAction(s, { type: 'tabDrag.clear' })).toBe(s);
+
+    const begun = applyUiAction(s, { type: 'tabDrag.begin', tabId: 10, index: 0 });
+    expect(begun.ui.tabDrag).toEqual({ tabId: 10, from: 0, to: 0 });
+    expect(applyUiAction(begun, { type: 'tabDrag.to', index: 0 })).toBe(begun);
+    const moved = applyUiAction(begun, { type: 'tabDrag.to', index: 1 });
+    expect(moved.ui.tabDrag).toEqual({ tabId: 10, from: 0, to: 1 });
+    expect(applyUiAction(moved, { type: 'tabDrag.to', index: 1 })).toBe(moved);
+    // A negative slot clamps rather than corrupting the preview.
+    expect(applyUiAction(moved, { type: 'tabDrag.to', index: -3 }).ui.tabDrag!.to).toBe(0);
+    const cleared = applyUiAction(moved, { type: 'tabDrag.clear' });
+    expect(cleared.ui.tabDrag).toBeNull();
+    expect(applyUiAction(cleared, { type: 'tabDrag.clear' })).toBe(cleared);
+  });
+
+  test('a drag whose tab closes mid-drag is dropped by the next snapshot', () => {
+    const s = applyUiAction(split(), { type: 'tabDrag.begin', tabId: 10, index: 0 });
+    expect(s.ui.tabDrag).not.toBeNull();
+    // Snapshot without tab 10.
+    const without = applyServerEvent(
+      s,
+      snapshotEvent(
+        snapshot({
+          workspace: workspace({
+            revision: 2,
+            sessions: [{ id: 1, name: 'Default', active_tab: 11, tabs: [{ id: 11, surface: 101 }] }],
+          }),
+          surfaces: [surface(101)],
+        }),
+      ),
+    );
+    expect(without.tabs[10]).toBeUndefined();
+    expect(without.ui.tabDrag).toBeNull();
+  });
+
   test('window resize is recorded once', () => {
     const s = applyUiAction(seeded(), { type: 'window.resize', width: 1200, height: 800 });
     expect(s.ui.window).toEqual({ width: 1200, height: 800 });

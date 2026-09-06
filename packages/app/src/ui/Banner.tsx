@@ -104,6 +104,9 @@ export function Banner() {
           testId="banner-action"
           onClick={content.action.run}
           style={{
+            // Chrome text is not prose: a press here must not start a text
+            // selection (gpuix `<text>` is selectable by default; this inherits).
+            userSelect: 'none',
             display: 'flex',
             flexShrink: 0,
             paddingLeft: tokens.space.md,

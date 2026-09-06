@@ -6,11 +6,21 @@
  * owning its own row chrome.
  *
  * Every `<text>` sets `color` explicitly — GPUI does not inherit it.
+ *
+ * # Reordering by drag
+ *
+ * `Tab` owns the pointer plumbing (press, threshold, delta, release); the
+ * strip owns the geometry (`state/tab-drag.ts`) and the commit. Nothing is
+ * sent until the release: `ui.tabDrag` is a local preview, and the release
+ * fires one `tab.reorder`, only if the index actually changed. The row's
+ * `onClick` still fires on release, so dragging a tab also activates it —
+ * what a browser tab strip does.
  */
 
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { selectActiveSession, selectActiveTabId, selectActiveTabs } from '../state/selectors.js';
 import { focusedSurfaceOf } from '../state/layout.js';
+import { REORDER_THRESHOLD, dropIndex, previewOrder, tabExtent } from '../state/tab-drag.js';
 import type { SessionView, SurfaceView, TabView } from '../state/types.js';
 import type { Tokens } from '../theme/tokens.js';
 import { useRunCommand, useServices, useWorkspace } from './context.js';
@@ -19,6 +29,7 @@ import { displayTitle } from '../state/title.js';
 import { debug } from '../util/debug.js';
 
 const menuLog = debug('st:menu');
+const dragLog = debug('st:tabdrag');
 
 export function TabStrip() {
   const { tokens, store } = useServices();
@@ -29,6 +40,7 @@ export function TabStrip() {
   const surfaces = useWorkspace((s) => s.surfaces);
   const focusedPaneByTab = useWorkspace((s) => s.ui.focusedPaneByTab);
   const confirmingCloseTabId = useWorkspace((s) => s.ui.confirmingCloseTabId);
+  const tabDrag = useWorkspace((s) => s.ui.tabDrag);
   const run = useRunCommand();
   const { commandContext } = useServices();
 
@@ -55,6 +67,64 @@ export function TabStrip() {
     });
   };
 
+  // The live preview: the dragged tab shown at the slot it is held over.
+  const byId = new Map(tabs.map((tab) => [tab.id, tab]));
+  const ordered = previewOrder(
+    tabs.map((tab) => tab.id),
+    tabDrag ? { tabId: tabDrag.tabId, to: tabDrag.to } : null,
+  )
+    .map((id) => byId.get(id))
+    .filter((tab): tab is TabView => Boolean(tab));
+  const extent = tabExtent(vertical, tokens);
+
+  const onDragStart = (tab: TabView) => {
+    const index = tabs.findIndex((t) => t.id === tab.id);
+    if (index === -1) return;
+    dragLog('begin', tab.id, 'from', index, 'extent', extent);
+    store.dispatch({ type: 'tabDrag.begin', tabId: tab.id, index });
+  };
+  const onDrag = (tab: TabView, delta: number) => {
+    const drag = store.getState().ui.tabDrag;
+    if (!drag || drag.tabId !== tab.id) return;
+    const count = store.getState().sessions[tab.sessionId]?.tabIds.length ?? tabs.length;
+    store.dispatch({ type: 'tabDrag.to', index: dropIndex(drag.from, delta, extent, count) });
+  };
+  const onDragEnd = (tab: TabView) => {
+    const drag = store.getState().ui.tabDrag;
+    store.dispatch({ type: 'tabDrag.clear' });
+    if (!drag || drag.tabId !== tab.id || drag.to === drag.from) return;
+    dragLog('commit', tab.id, drag.from, '->', drag.to);
+    void commandContext.client
+      .request('tab.reorder', { tab: tab.id, index: drag.to })
+      .catch((err: unknown) => {
+        store.dispatch({
+          type: 'toast.push',
+          text: `Could not move tab: ${err instanceof Error ? err.message : String(err)}`,
+          kind: 'error',
+        });
+      });
+  };
+
+  const rows = ordered.map((tab) => (
+    <Tab
+      key={tab.id}
+      tab={tab}
+      surface={rowSurface(tab)}
+      bell={anyBell(tab)}
+      active={tab.id === activeTabId}
+      confirming={confirmingCloseTabId === tab.id}
+      dragging={tabDrag?.tabId === tab.id}
+      vertical={vertical}
+      tokens={tokens}
+      onActivate={() => activate(tab)}
+      onClose={() => run('tab.close', tab.id)}
+      onAuxClick={(event) => openMenu(tab, event)}
+      onDragStart={() => onDragStart(tab)}
+      onDrag={(delta) => onDrag(tab, delta)}
+      onDragEnd={() => onDragEnd(tab)}
+    />
+  ));
+
   if (vertical) {
     return (
       <div
@@ -74,21 +144,7 @@ export function TabStrip() {
         }}
       >
         <SessionChip session={session} tokens={tokens} vertical={vertical} />
-        {tabs.map((tab) => (
-          <Tab
-            key={tab.id}
-            tab={tab}
-            surface={rowSurface(tab)}
-            bell={anyBell(tab)}
-            active={tab.id === activeTabId}
-            confirming={confirmingCloseTabId === tab.id}
-            vertical={vertical}
-            tokens={tokens}
-            onActivate={() => activate(tab)}
-            onClose={() => run('tab.close', tab.id)}
-            onAuxClick={(event) => openMenu(tab, event)}
-          />
-        ))}
+        {rows}
       </div>
     );
   }
@@ -111,21 +167,7 @@ export function TabStrip() {
       }}
     >
       <SessionChip session={session} tokens={tokens} vertical={vertical} />
-      {tabs.map((tab) => (
-        <Tab
-          key={tab.id}
-          tab={tab}
-          surface={rowSurface(tab)}
-          bell={anyBell(tab)}
-          active={tab.id === activeTabId}
-          confirming={confirmingCloseTabId === tab.id}
-          vertical={vertical}
-          tokens={tokens}
-          onActivate={() => activate(tab)}
-          onClose={() => run('tab.close', tab.id)}
-          onAuxClick={(event) => openMenu(tab, event)}
-        />
-      ))}
+      {rows}
       <NewTabButton tokens={tokens} onClick={() => run('tab.new')} />
     </div>
   );
@@ -159,6 +201,9 @@ export function SessionChip(props: {
   };
 
   if (renaming) {
+    // The input is untouched by `userSelect`: it is a different element type
+    // with its own focus handle and editing, and selecting text inside it
+    // must keep working.
     return (
       <input
         testId="session-rename-input"
@@ -211,6 +256,7 @@ export function SessionChip(props: {
           gap: tokens.space.sm,
           borderRadius: tokens.radius.tab,
           cursor: 'pointer',
+          userSelect: 'none',
           hover: { backgroundColor: tokens.bg.glassHover },
         }}
       >
@@ -259,6 +305,7 @@ export function SessionChip(props: {
         borderRadius: tokens.radius.chip,
         backgroundColor: tokens.bg.glass,
         cursor: 'pointer',
+        userSelect: 'none',
         hover: { backgroundColor: tokens.bg.glassHover },
       }}
     >
@@ -270,6 +317,17 @@ export function SessionChip(props: {
   );
 }
 
+/** The mouse payload fields a tab reads; gpuix's `EventPayload` is a superset. */
+interface TabMouseEvent {
+  x?: number;
+  y?: number;
+  button?: number;
+  /** gpuix sets this on `mouseMove`; a released primary button ends the drag. */
+  pressedButton?: number;
+}
+
+const PRIMARY = 0;
+
 export function Tab(props: {
   tab: TabView;
   /** The focused Pane's Surface — the one whose title the row shows. */
@@ -278,12 +336,20 @@ export function Tab(props: {
   bell?: boolean;
   active: boolean;
   confirming: boolean;
+  /** This row is the one being dragged; it is outlined in accent. */
+  dragging?: boolean;
   vertical: boolean;
   tokens: Tokens;
   onActivate: () => void;
   onClose: () => void;
   /** Right-click (gpuix `auxClick`): opens the tab Menu at the pointer. */
   onAuxClick?: (event: { x?: number; y?: number; isRightClick?: boolean; button?: number }) => void;
+  /** The press moved past `REORDER_THRESHOLD`; a drag is now in progress. */
+  onDragStart?: () => void;
+  /** Pointer travel since the press, px along the strip's axis. */
+  onDrag?: (delta: number) => void;
+  /** The button came up after a drag (never after a plain click). */
+  onDragEnd?: () => void;
 }) {
   const { tokens, surface } = props;
   const exited = surface?.status === 'exited';
@@ -292,6 +358,44 @@ export function Tab(props: {
   const selected = props.active;
   const bell = props.bell ?? surface?.bell ?? false;
   const paneCount = props.tab.surfaceIds.length;
+
+  // The press, while the button is down. Not state: a re-render per pointer
+  // move would be wasted, the store already re-renders the strip on `to`.
+  const press = useRef<{ pos: number; dragging: boolean } | null>(null);
+  const axisPos = (event: TabMouseEvent): number | null => {
+    const pos = props.vertical ? event.y : event.x;
+    return typeof pos === 'number' && Number.isFinite(pos) ? pos : null;
+  };
+  const finish = () => {
+    const current = press.current;
+    press.current = null;
+    if (current?.dragging) props.onDragEnd?.();
+  };
+  const onMouseDown = (event: TabMouseEvent) => {
+    if (event.button !== undefined && event.button !== PRIMARY) return;
+    const pos = axisPos(event);
+    if (pos === null) return;
+    press.current = { pos, dragging: false };
+  };
+  const onMouseMove = (event: TabMouseEvent) => {
+    const current = press.current;
+    if (!current) return;
+    if (event.pressedButton !== undefined && event.pressedButton !== PRIMARY) {
+      // The button went up somewhere we did not see (focus change, etc.).
+      finish();
+      return;
+    }
+    const pos = axisPos(event);
+    if (pos === null) return;
+    const delta = pos - current.pos;
+    if (!current.dragging) {
+      // Gate on the threshold so a plain click still just activates.
+      if (Math.abs(delta) < REORDER_THRESHOLD) return;
+      current.dragging = true;
+      props.onDragStart?.();
+    }
+    props.onDrag?.(delta);
+  };
 
   return (
     // LAYOUT ONLY — no onClick here. gpuix fires an ancestor's onClick as
@@ -330,15 +434,32 @@ export function Tab(props: {
         // Always a 1px border (transparent when idle) so rows do not shift
         // 1px sideways on activate.
         borderWidth: tokens.border.width,
-        borderColor: selected ? tokens.border.glass : 'transparent',
+        borderColor: props.dragging
+          ? tokens.accent
+          : selected
+            ? tokens.border.glass
+            : 'transparent',
         backgroundColor: selected ? tokens.bg.glassActive : 'transparent',
         cursor: 'pointer',
+        // Pressing a tab must not start a text selection, and dragging it to
+        // reorder must not paint the title blue. `userSelect` inherits to the
+        // title and every badge inside.
+        userSelect: 'none',
         hover: { backgroundColor: selected ? tokens.bg.glassActive : tokens.bg.glassHover },
       }}
     >
       <div
         testId={`tab-${props.tab.id}-activate`}
         onClick={props.onActivate}
+        // The press is on the activate child, not the row: the close × is
+        // its sibling, and starting a drag from it would fight the button.
+        // `onMouseDown` + `onMouseMove` on the same element give it GPUI
+        // pointer capture, so moves and the release keep arriving after the
+        // pointer leaves the row (`ui/drag.ts` explains why an ancestor
+        // cannot do this).
+        onMouseDown={onMouseDown}
+        onMouseMove={onMouseMove}
+        onMouseUp={finish}
         style={{
           display: 'flex',
           flexDirection: 'row',
@@ -458,6 +579,7 @@ export function NewTabButton(props: { tokens: Tokens; onClick: () => void }) {
         justifyContent: 'center',
         borderRadius: tokens.radius.tab,
         cursor: 'pointer',
+        userSelect: 'none',
         hover: { backgroundColor: tokens.bg.glassHover },
       }}
     >

@@ -39,6 +39,7 @@ export const initialUiState: UiState = {
   focusedPaneByTab: {},
   menu: null,
   ratioPreview: null,
+  tabDrag: null,
   renamingSessionId: null,
   confirmingCloseTabId: null,
   window: { width: 0, height: 0 },
@@ -151,6 +152,7 @@ function pruneUi(
   const confirmGone = ui.confirmingCloseTabId !== null && !tabs[ui.confirmingCloseTabId];
   const menuGone = ui.menu !== null && !tabs[ui.menu.tabId];
   const previewGone = ui.ratioPreview !== null && !tabs[ui.ratioPreview.tabId];
+  const dragGone = ui.tabDrag !== null && !tabs[ui.tabDrag.tabId];
   // A focused Pane that closed (or a Tab that closed) drops out; the Tab then
   // focuses its first Pane through the selector's fallback.
   let focused = ui.focusedPaneByTab;
@@ -160,7 +162,14 @@ function pruneUi(
     if (focused === ui.focusedPaneByTab) focused = { ...focused };
     delete focused[Number(key)];
   }
-  if (!renamingGone && !confirmGone && !menuGone && !previewGone && focused === ui.focusedPaneByTab) {
+  if (
+    !renamingGone &&
+    !confirmGone &&
+    !menuGone &&
+    !previewGone &&
+    !dragGone &&
+    focused === ui.focusedPaneByTab
+  ) {
     return ui;
   }
   return {
@@ -169,6 +178,7 @@ function pruneUi(
     confirmingCloseTabId: confirmGone ? null : ui.confirmingCloseTabId,
     menu: menuGone ? null : ui.menu,
     ratioPreview: previewGone ? null : ui.ratioPreview,
+    tabDrag: dragGone ? null : ui.tabDrag,
     focusedPaneByTab: focused,
   };
 }
@@ -352,6 +362,23 @@ export function applyUiAction(state: WorkspaceState, action: UiAction): Workspac
     case 'ratio.clear':
       if (ui.ratioPreview === null) return state;
       return withUi(state, { ratioPreview: null });
+
+    case 'tabDrag.begin': {
+      if (!state.tabs[action.tabId]) return state;
+      const index = Math.max(0, action.index);
+      return withUi(state, { tabDrag: { tabId: action.tabId, from: index, to: index } });
+    }
+
+    case 'tabDrag.to': {
+      if (ui.tabDrag === null) return state;
+      const to = Math.max(0, action.index);
+      if (ui.tabDrag.to === to) return state;
+      return withUi(state, { tabDrag: { ...ui.tabDrag, to } });
+    }
+
+    case 'tabDrag.clear':
+      if (ui.tabDrag === null) return state;
+      return withUi(state, { tabDrag: null });
 
     case 'session.beginRename':
       if (!state.sessions[action.sessionId]) return state;

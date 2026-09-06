@@ -680,7 +680,14 @@ impl GridState {
         )
     }
 
-    /// Grid coordinates a mouse report uses: 1-based, viewport-relative.
+    /// Grid coordinates a mouse report uses: **0-based**, viewport-relative.
+    ///
+    /// `MouseEvent::cell` is documented 0-based and `encode_mouse` adds the
+    /// 1-based offset the wire wants. Adding it here too — which this once
+    /// did — put every press, release, drag and wheel report at
+    /// `(col + 2, row + 2)`, so a click on a TUI's one-row tab bar landed on
+    /// the blank line beneath it. Do not add a `+ 1` on this side of any mouse
+    /// path; see `a_click_on_the_top_left_cell_reaches_the_wire_as_1_1`.
     fn report_cell(&self, x: f32, y: f32) -> (u16, u16) {
         let point = self.cell_at(x, y);
         let row = point
@@ -688,7 +695,7 @@ impl GridState {
             .get()
             .saturating_sub(self.viewport_top)
             .min(u64::from(self.geometry.rows.saturating_sub(1))) as u16;
-        (point.col + 1, row + 1)
+        (point.col, row)
     }
 
     /// Reports a wheel notch as button 64/65, one press per line, capped so a
@@ -1323,6 +1330,32 @@ where
         });
     }
 
+    // ── file drop ───────────────────────────────────────────────────
+    // A file dragged from Finder / Explorer onto the grid types its
+    // shell-escaped path plus a space, the way iTerm2 and Terminal.app do it.
+    // That is what lets a TUI such as OpenCode turn a dropped PNG into an
+    // `[Image]` attachment: it is reading a pasted path, not receiving a file.
+    // GPUI does the platform work — a native file drag arrives as
+    // `PlatformInput::FileDrop`, becomes an `ExternalPaths` drag, and `Submit`
+    // fires this listener. It goes through `paste` so bracketed paste applies
+    // when the program has mode 2004 on and a path can never be read as
+    // keystrokes.
+    {
+        let state = Rc::clone(state);
+        let focus = focus.clone();
+        element = element.on_drop::<gpui::ExternalPaths>(move |paths, window, cx| {
+            let text = crate::dnd::shell_words(paths.paths());
+            if text.is_empty() {
+                return;
+            }
+            focus.focus(window, cx);
+            let mut grid = state.borrow_mut();
+            grid.paste(Some(&text), cx);
+            drop(grid);
+            window.refresh();
+        });
+    }
+
     element
 }
 
@@ -1434,9 +1467,8 @@ mod tests {
         assert_eq!(state.surface(), None);
     }
 
-    #[test]
-    fn report_cells_are_one_based() {
-        let state = GridState {
+    fn unpadded_grid() -> GridState {
+        GridState {
             geometry: GridGeometry::fit(
                 800.0,
                 400.0,
@@ -1449,10 +1481,37 @@ mod tests {
                 },
             ),
             ..GridState::default()
+        }
+    }
+
+    #[test]
+    fn report_cells_are_zero_based_because_the_encoder_adds_the_one() {
+        let state = unpadded_grid();
+        assert_eq!(state.report_cell(0.0, 0.0), (0, 0));
+        assert_eq!(state.report_cell(8.0, 16.0), (1, 1));
+        assert_eq!(state.report_cell(23.9, 16.0), (2, 1));
+    }
+
+    /// End to end through the same two functions the press handler calls,
+    /// asserting the bytes. This is the test that would have caught the
+    /// doubled offset: the unit test above once pinned `(1, 1)` and passed.
+    #[test]
+    fn a_click_on_the_top_left_cell_reaches_the_wire_as_1_1() {
+        let mut state = unpadded_grid();
+        state.modes = Modes::MOUSE_CLICK | Modes::MOUSE_SGR;
+        let (protocol, encoding) = state.mouse_protocol();
+        let press_at = |x: f32, y: f32| {
+            let cell = state.report_cell(x, y);
+            encode_mouse(
+                &MouseEvent::press(st_client_core::mouse::MouseButton::Left, cell, Mods::empty()),
+                protocol,
+                encoding,
+            )
+            .expect("mode 1000 reports a press")
         };
-        assert_eq!(state.report_cell(0.0, 0.0), (1, 1));
-        assert_eq!(state.report_cell(8.0, 16.0), (2, 2));
-        assert_eq!(state.report_cell(23.9, 16.0), (3, 2));
+        assert_eq!(press_at(0.0, 0.0), b"\x1b[<0;1;1M");
+        // Third cell of the second row.
+        assert_eq!(press_at(20.0, 20.0), b"\x1b[<0;3;2M");
     }
 
     #[test]

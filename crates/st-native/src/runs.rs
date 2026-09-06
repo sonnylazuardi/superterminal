@@ -94,6 +94,11 @@ pub struct RunSpan {
     /// a forced advance and clipped to two cells by the content mask
     /// (04 §6 step 7).
     pub wide: bool,
+    /// Every cell of this run is one Box Drawing / Block Elements codepoint,
+    /// drawn by [`crate::sprites`] from the cell box instead of shaped through
+    /// the font. Sprite runs merge only with sprite runs and never enter the
+    /// shaped-line cache.
+    pub sprite: bool,
 }
 
 /// One row's worth of paint work.
@@ -145,7 +150,13 @@ pub fn layout_row(
         let key = StyleKey::from_resolved(&resolved);
         let text = cell_text(row, cell);
         let wide = cell.flags.contains(CellFlags::WIDE);
-        push_run(&mut layout.runs, col, width, &text, key, wide);
+        // Exactly one codepoint, not wide, not a grapheme cluster from the
+        // side table: the only shape `sprites::sprite_for` knows how to draw.
+        let sprite = !wide
+            && !cell.flags.contains(CellFlags::GRAPHEME_EXT)
+            && text.chars().count() == 1
+            && text.chars().next().is_some_and(crate::sprites::is_sprite);
+        push_run(&mut layout.runs, col, width, &text, key, wide, sprite);
 
         col += width;
     }
@@ -162,7 +173,7 @@ pub fn layout_row(
 /// a cache entry per column the cursor moves.
 fn trim_trailing_blanks(runs: &mut Vec<RunSpan>) {
     while let Some(last) = runs.last_mut() {
-        if !last.key.is_plain() || last.wide {
+        if !last.key.is_plain() || last.wide || last.sprite {
             return;
         }
         let kept = last.text.trim_end_matches(' ').len();
@@ -208,12 +219,21 @@ fn push_bg(spans: &mut Vec<BgSpan>, col: u16, cells: u16, color: Rgb) {
     spans.push(BgSpan { col, cells, color });
 }
 
-/// Appends a run, merging with the previous one when it is adjacent and shares
-/// the style key.
-fn push_run(runs: &mut Vec<RunSpan>, col: u16, cells: u16, text: &str, key: StyleKey, wide: bool) {
+/// Appends a run, merging with the previous one when it is adjacent, shares
+/// the style key, and is the same kind (shaped text with shaped text, sprites
+/// with sprites).
+fn push_run(
+    runs: &mut Vec<RunSpan>,
+    col: u16,
+    cells: u16,
+    text: &str,
+    key: StyleKey,
+    wide: bool,
+    sprite: bool,
+) {
     if !wide {
         if let Some(last) = runs.last_mut() {
-            if !last.wide && last.key == key && last.col + last.cells == col {
+            if !last.wide && last.sprite == sprite && last.key == key && last.col + last.cells == col {
                 last.cells += cells;
                 last.text.push_str(text);
                 return;
@@ -226,6 +246,7 @@ fn push_run(runs: &mut Vec<RunSpan>, col: u16, cells: u16, text: &str, key: Styl
         text: text.to_string(),
         key,
         wide,
+        sprite,
     });
 }
 
@@ -595,6 +616,56 @@ mod tests {
         row.cells.push(PackedCell::from_char('a', StyleIdx::new(0)));
         let layout = layout_row(&row, 2, &table(&[]), &palette(), None);
         assert_eq!(layout.runs[0].text, " a");
+    }
+
+    #[test]
+    fn box_and_block_cells_get_sprite_runs_of_their_own() {
+        // "ab▀▄c" → text run, sprite run, text run — same style throughout.
+        let row = text_row("ab▀▄c", 0);
+        let layout = layout_row(&row, 5, &table(&[]), &palette(), None);
+        assert_eq!(layout.runs.len(), 3, "{:?}", layout.runs);
+        assert_eq!(layout.runs[0].text, "ab");
+        assert!(!layout.runs[0].sprite);
+        assert_eq!(layout.runs[1].text, "▀▄");
+        assert!(layout.runs[1].sprite, "block elements are drawn, not shaped");
+        assert_eq!(layout.runs[1].col, 2);
+        assert_eq!(layout.runs[1].cells, 2);
+        assert_eq!(layout.runs[2].text, "c");
+        assert!(!layout.runs[2].sprite);
+    }
+
+    #[test]
+    fn a_row_of_box_drawing_is_one_sprite_run() {
+        let row = text_row("╭──╮", 0);
+        let layout = layout_row(&row, 4, &table(&[]), &palette(), None);
+        assert_eq!(layout.runs.len(), 1);
+        assert!(layout.runs[0].sprite);
+        assert_eq!(layout.runs[0].cells, 4);
+    }
+
+    #[test]
+    fn the_diagonals_stay_with_the_font() {
+        let row = text_row("─╱─", 0);
+        let layout = layout_row(&row, 3, &table(&[]), &palette(), None);
+        assert_eq!(layout.runs.len(), 3);
+        assert!(layout.runs[0].sprite);
+        assert!(!layout.runs[1].sprite);
+        assert_eq!(layout.runs[1].text, "╱");
+        assert!(layout.runs[2].sprite);
+    }
+
+    #[test]
+    fn a_sprite_never_merges_across_a_style_change() {
+        let red = Style {
+            fg: Color::Indexed(1),
+            ..Style::DEFAULT
+        };
+        let mut row = Row::new();
+        row.cells.push(PackedCell::from_char('█', StyleIdx::new(1)));
+        row.cells.push(PackedCell::from_char('█', StyleIdx::new(0)));
+        let layout = layout_row(&row, 2, &table(&[red]), &palette(), None);
+        assert_eq!(layout.runs.len(), 2);
+        assert!(layout.runs.iter().all(|run| run.sprite));
     }
 
     #[test]

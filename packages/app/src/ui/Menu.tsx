@@ -91,6 +91,9 @@ export function Menu() {
               testId={`menu-item-${item.commandId}`}
               onClick={() => activate(item)}
               style={{
+                // Chrome text is not prose: a press here must not start a text
+                // selection (gpuix `<text>` is selectable by default; this inherits).
+                userSelect: 'none',
                 display: 'flex',
                 flexDirection: 'row',
                 alignItems: 'center',

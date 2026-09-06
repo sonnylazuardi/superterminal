@@ -15,6 +15,8 @@
 //! | [`element`] | the `<terminal-grid>` `CustomElement` and its factory |
 //! | [`paint`] | one frame: quads, runs, decorations, cursor, scrollbar |
 //! | [`runs`] | row → background spans + style runs, and the shaped-line cache |
+//! | [`sprites`] | Box Drawing and Block Elements as cell-box geometry, not font glyphs |
+//! | [`dnd`] | a dropped file becomes its shell-escaped path, typed |
 //! | [`geometry`] | cell metrics, grid sizing, scroll and scrollbar arithmetic |
 //! | [`props`] | the JSON prop surface, validation, the passthrough matcher |
 //! | [`theme`] | `theme` prop → `st_client_core::Palette` |
@@ -63,6 +65,7 @@
 #![deny(missing_docs)]
 
 pub mod conn;
+pub mod dnd;
 pub mod element;
 pub mod geometry;
 pub mod hello_box;
@@ -72,6 +75,7 @@ pub mod paint;
 pub mod props;
 pub mod registry;
 pub mod runs;
+pub mod sprites;
 pub mod stats;
 pub mod theme;
 pub mod viewstate;

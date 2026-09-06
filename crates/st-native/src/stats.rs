@@ -31,6 +31,11 @@ pub struct FrameStats {
     pub cached_runs: u32,
     /// Background quads painted in the last frame, after merging.
     pub bg_quads: u32,
+    /// Box Drawing / Block Elements quads painted in the last frame — the
+    /// cells drawn by `sprites.rs` instead of the font. Readable headlessly
+    /// through `stats.spriteQuads`, which is how a harness checks that a
+    /// block-art logo took the sprite path without a screenshot.
+    pub sprite_quads: u32,
     /// Rows painted in the last frame.
     pub rows: u16,
     /// Columns painted in the last frame.
@@ -47,6 +52,7 @@ impl Default for FrameStats {
             shaped_runs: 0,
             cached_runs: 0,
             bg_quads: 0,
+            sprite_quads: 0,
             rows: 0,
             cols: 0,
         }
@@ -60,6 +66,7 @@ impl FrameStats {
         self.shaped_runs = 0;
         self.cached_runs = 0;
         self.bg_quads = 0;
+        self.sprite_quads = 0;
     }
 
     /// Records how long the frame took.
