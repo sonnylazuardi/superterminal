@@ -139,10 +139,18 @@ if [ -d assets/superterminal.icon ]; then
         --target-device mac \
         --minimum-deployment-target 26.0 \
         --platform macosx; then
-      cp "$COMPILE_DIR/Assets.car" "$RES_DIR/"
-      /usr/libexec/PlistBuddy -c "Add :CFBundleIconName string superterminal" \
-        "$APP/Contents/Info.plist" >/dev/null
-      HAVE_ICON=1
+      # actool can exit 0 while producing nothing: on Xcode whose SDK stops
+      # below the 26.0 deployment target it prints a warning and skips the
+      # compile. Copying blindly trips `set -e` on the missing file, so
+      # check first and fall back to .icns like any other actool failure.
+      if [ -f "$COMPILE_DIR/Assets.car" ]; then
+        cp "$COMPILE_DIR/Assets.car" "$RES_DIR/"
+        /usr/libexec/PlistBuddy -c "Add :CFBundleIconName string superterminal" \
+          "$APP/Contents/Info.plist" >/dev/null
+        HAVE_ICON=1
+      else
+        log "actool produced no Assets.car (SDK older than --minimum-deployment-target 26.0?) — shipping .icns only"
+      fi
     else
       log "actool failed — shipping .icns only"
     fi
