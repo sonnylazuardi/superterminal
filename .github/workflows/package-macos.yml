@@ -45,8 +45,10 @@ permissions:
 
 jobs:
   dmg:
-    name: app + dmg (macos-14, arm64)
-    runs-on: macos-14
+    name: app + dmg (macos-15, arm64, Xcode 26)
+    # macos-15 (not 14: Sonoma images deprecate in 2026), Xcode 26.x selected
+    # explicitly below — macos-15 ships it pre-installed, the default is 16.4.
+    runs-on: macos-15
     # Cold GPUI release builds on 3-core runners can take most of an hour;
     # warm runs land in minutes.
     timeout-minutes: 150
@@ -58,6 +60,14 @@ jobs:
           submodules: recursive
           # The Zed checkout is GBs at full history; the pin is one commit.
           fetch-depth: 1
+
+      # The Liquid Glass icon needs the macOS 26 SDK (`--minimum-deployment-
+      # target 26.0` in package-macos.sh). macos-15 carries Xcode 26.x
+      # pre-installed — this only flips xcode-select, no download.
+      - name: Select Xcode 26
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: '26.3'
 
       - name: Apply the vendored gpuix patches
         run: |
@@ -83,7 +93,9 @@ jobs:
           workspaces: |
             . -> target
             crates/st-native -> crates/st-native/target
-          key: macos-package-${{ hashFiles('Cargo.lock', 'crates/st-native/Cargo.lock', 'rust-toolchain.toml', 'vendor/gpuix/rust-toolchain.toml', 'docs/PINS.md') }}
+          # The Xcode major rides along: switching 16→26 must not reuse a
+          # target dir whose Metal shaders were compiled against the old SDK.
+          key: macos-package-xcode26-${{ hashFiles('Cargo.lock', 'crates/st-native/Cargo.lock', 'rust-toolchain.toml', 'vendor/gpuix/rust-toolchain.toml', 'docs/PINS.md') }}
 
       - name: Cache Bun installs
         uses: actions/cache@v4
