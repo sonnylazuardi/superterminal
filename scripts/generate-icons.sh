@@ -1,9 +1,15 @@
 #!/usr/bin/env bash
-# Build assets/superterminal.icns, assets/superterminal.icon, and
-# assets/icon-preview.png (flattened Liquid Glass render) from the source PNG.
+# Build assets/superterminal.icns, assets/superterminal.icon,
+# assets/superterminal.ico (Windows) and assets/icon-preview.png (flattened
+# Liquid Glass render) from the source PNG.
 #
 #   scripts/generate-icons.sh
 #   scripts/generate-icons.sh path/to/source.png
+#
+# The .ico is cut square around the artwork's bounding box (the 1024 canvas
+# leaves ~16% of transparent padding on every side, which reads as a tiny
+# glyph in a 16 px tile) and holds 16..256 px PNG-compressed entries. It is
+# the only step that runs on Linux too: iconutil and ictool are Mac-only.
 #
 # The .icns is the pre-Tahoe Dock/Finder fallback: the artwork composited
 # onto the charcoal fill so transparent padding does not punch a hole in the
@@ -96,12 +102,31 @@ doc = {
     "supported-platforms": {"squares": ["macOS"]},
 }
 (icon_dir / "icon.json").write_text(json.dumps(doc, indent=2) + "\n")
+
+# Windows .ico: bun build --compile --windows-icon and the WiX shortcut /
+# Apps & features entry (packaging/windows/Product.wxs).
+l, t, r, b = im.getbbox()
+side = max(r - l, b - t)
+pad = int(side * 0.04)
+side += 2 * pad
+cx, cy = (l + r) // 2, (t + b) // 2
+x0, y0 = cx - side // 2, cy - side // 2
+square = Image.new("RGBA", (side, side), (0, 0, 0, 0))
+square.paste(im, (-x0, -y0))
+ico = assets / "superterminal.ico"
+square.save(ico, "ICO", sizes=[(px, px) for px in (256, 128, 64, 48, 40, 32, 24, 20, 16)])
+print(f"wrote {ico}")
 print(f"wrote {master}")
 print(f"wrote {icon_dir}")
 print(f"iconset {iconset}")
 PY
 
 ICONSET="$(python3 -c 'from pathlib import Path; import tempfile; print((Path(tempfile.gettempdir()) / "st-iconset-path").read_text())')"
+if ! command -v iconutil >/dev/null 2>&1; then
+  rm -rf "$(dirname "$ICONSET")"
+  echo "warning: iconutil not found (not macOS) — skipped .icns and icon-preview.png" >&2
+  exit 0
+fi
 iconutil -c icns "$ICONSET" -o assets/superterminal.icns
 echo "wrote assets/superterminal.icns ($(du -h assets/superterminal.icns | cut -f1))"
 rm -rf "$(dirname "$ICONSET")"

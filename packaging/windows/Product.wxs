@@ -8,13 +8,16 @@
   subsystem first or Windows parks a console next to every window:
     editbin.exe /SUBSYSTEM:WINDOWS superterminal.exe
     candle.exe Product.wxs -o obj\
-    light.exe obj\Product.wixobj -o Superterminal-0.1.1.msi
+    light.exe obj\Product.wixobj -o Superterminal-0.1.4.msi
+  The exe carries its own icon (bun build, compile mode, windows-icon flag,
+  assets/superterminal.ico); superterminal.ico beside this file feeds
+  the Start Menu shortcut and the Apps & features entry.
 -->
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
   <Product Id="*"
            Name="Superterminal"
            Language="1033"
-           Version="0.1.3"
+           Version="0.1.4"
            Manufacturer="Superterminal"
            UpgradeCode="41205641-1b34-4af0-9aa1-d9bfddb883b1">
     <Package InstallerVersion="500"
@@ -24,6 +27,8 @@
              Description="GPU terminal client with a persistent WSL backend" />
     <MajorUpgrade DowngradeErrorMessage="A newer Superterminal is already installed." />
     <MediaTemplate EmbedCab="yes" />
+    <Icon Id="superterminal.ico" SourceFile="superterminal.ico" />
+    <Property Id="ARPPRODUCTICON" Value="superterminal.ico" />
 
     <Directory Id="TARGETDIR" Name="SourceDir">
       <Directory Id="LocalAppDataFolder">
@@ -65,7 +70,8 @@
             <Shortcut Id="AppShortcut"
                       Name="Superterminal"
                       Target="[INSTALLFOLDER]superterminal.exe"
-                      WorkingDirectory="INSTALLFOLDER" />
+                      WorkingDirectory="INSTALLFOLDER"
+                      Icon="superterminal.ico" />
             <RemoveFolder Id="RemoveAppPrograms" On="uninstall" />
             <RegistryValue Root="HKCU"
                            Key="Software\Superterminal"
