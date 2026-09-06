@@ -138,3 +138,7 @@ From [`docs/plan/07-milestones.md`](./docs/plan/07-milestones.md):
 | [`docs/plan/06-testing-perf-ci.md`](./docs/plan/06-testing-perf-ci.md) | Test pyramid, VT conformance, perf budgets, CI |
 | [`docs/plan/07-milestones.md`](./docs/plan/07-milestones.md) | M0–M6 work breakdown with task ids, estimates, acceptance tests |
 | [`docs/adr/`](./docs/adr/) | Architecture decision records (the hard‑to‑reverse choices) |
+
+## License
+
+[MIT](./LICENSE).

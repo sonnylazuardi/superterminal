@@ -2,7 +2,7 @@
   "name": "@superterminal/native",
   "version": "0.1.0",
   "private": true,
-  "license": "Apache-2.0",
+  "license": "MIT",
   "main": "index.js",
   "napi": {
     "binaryName": "superterminal-native",
