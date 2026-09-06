@@ -18,8 +18,9 @@
  * plane (Q43); this component never sees cell data at all (Q10, Q13).
  */
 
-import { useRef, useSyncExternalStore } from 'react';
+import { useMemo, useRef, useSyncExternalStore } from 'react';
 import type { Layout, SplitPath } from '@superterminal/protocol-ts';
+import { closeExitedPane } from '../commands/defaults.js';
 import {
   clampRatio,
   contentRect,
@@ -104,6 +105,7 @@ function PaneTree(props: PaneTreeProps) {
   if (node.kind === 'leaf') {
     return (
       <Pane
+        tabId={props.tabId}
         surfaceId={node.surface}
         focused={node.surface === props.focusedId}
         focusable={props.focusable}
@@ -200,12 +202,13 @@ function SplitDivider(props: {
 }
 
 function Pane(props: {
+  tabId: TabId;
   surfaceId: number;
   focused: boolean;
   focusable: boolean;
   onFocus: () => void;
 }) {
-  const { tokens, registry, config, store, commandBus, socketPath } = useServices();
+  const { tokens, registry, config, store, commandBus, commandContext, socketPath } = useServices();
   const command = useSyncExternalStore(
     commandBus.subscribe,
     commandBus.getSnapshot,
@@ -214,13 +217,46 @@ function Pane(props: {
   const theme: TerminalTheme = buildTerminalTheme(config.theme, config.terminal.boldIsBright);
   const fontZoom = useWorkspace((s) => s.ui.fontZoom);
   const id = props.surfaceId;
+  const tabId = props.tabId;
+  const exit = useWorkspace((s) => {
+    const surface = s.surfaces[id];
+    return surface?.status === 'exited' ? (surface.exitSignal ?? String(surface.exitCode ?? 0)) : null;
+  });
+  const exited = exit !== null;
+
+  // Q22: the grid stays readable after the program exits, and Enter or a
+  // click dismisses it. The grid consumes every key it can encode, Enter
+  // included, so once the Surface has exited we claim `enter` as a
+  // passthrough chord: the element declines it and GPUI bubbles it up to this
+  // wrapper's `onKeyDown` (HANDOVER V5). Nothing is listening on the PTY side
+  // any more, so no keystroke is lost by doing so.
+  const passthroughKeys = useMemo(
+    () => (exited ? [...registry.passthroughShortcuts, 'enter'] : registry.passthroughShortcuts),
+    [exited, registry],
+  );
+  const dismiss = () => {
+    void closeExitedPane(commandContext, tabId, id).catch((err: unknown) => {
+      store.dispatch({
+        type: 'toast.push',
+        text: `Could not close pane: ${err instanceof Error ? err.message : String(err)}`,
+        kind: 'error',
+      });
+    });
+  };
 
   return (
     <div
       testId={`pane-${id}`}
-      onMouseDown={props.onFocus}
+      onMouseDown={() => {
+        props.onFocus();
+        if (exited) dismiss();
+      }}
+      onKeyDown={(event: { key?: string }) => {
+        if (exited && event.key === 'enter') dismiss();
+      }}
       style={{
         display: 'flex',
+        flexDirection: 'column',
         flexGrow: 1,
         minWidth: 0,
         minHeight: 0,
@@ -231,6 +267,25 @@ function Pane(props: {
         backgroundColor: tokens.bg.glass,
       }}
     >
+      {exited ? (
+        <div
+          testId={`pane-${id}-exited`}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            flexShrink: 0,
+            paddingLeft: tokens.space.md,
+            paddingRight: tokens.space.md,
+            paddingTop: tokens.space.xs,
+            paddingBottom: tokens.space.xs,
+            backgroundColor: tokens.bg.glassSubtle,
+          }}
+        >
+          <text style={{ color: tokens.fg.muted, fontSize: tokens.font.chip }}>
+            {`Process exited (${exit}) — press Enter or click to close`}
+          </text>
+        </div>
+      ) : null}
       <terminal-grid
         // Remount on surface change so the element never carries stale state.
         key={id}
@@ -253,7 +308,7 @@ function Pane(props: {
         cursorBlink={config.terminal.cursorBlink}
         scrollbar={config.terminal.scrollbar}
         padding={{ top: 4, right: 8, bottom: 4, left: 8 }}
-        passthroughKeys={registry.passthroughShortcuts}
+        passthroughKeys={passthroughKeys}
         {...(command && command.surfaceId === id
           ? { command: { seq: command.seq, name: command.name, args: command.args } }
           : {})}
