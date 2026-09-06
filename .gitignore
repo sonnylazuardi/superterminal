@@ -11,3 +11,5 @@ docs/perf/*.json
 /.sysroot/
 /vendor-sysroot/
 *.log
+
+.DS_Store

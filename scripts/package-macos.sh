@@ -18,7 +18,8 @@
 #     MacOS/superterminal          the bun --compile binary (client)
 #     MacOS/superterminald         the daemon
 #     MacOS/st                     the CLI, handy for support
-#     Resources/superterminal.icns (only if an icon exists)
+#     Resources/superterminal.icns  pre-Tahoe Dock/Finder icon
+#     Resources/Assets.car          macOS 26 Liquid Glass (compiled from .icon)
 set -euo pipefail
 
 ST_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)"
@@ -104,12 +105,54 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-if [ -f "assets/superterminal.icns" ]; then
+# Icons. Ship both formats: .icns for macOS < 26, Assets.car for Tahoe's
+# Liquid Glass. actool must receive the .icon as a *standalone* input (nesting
+# it in an .xcassets catalog silently produces nothing) and
+# --output-partial-info-plist is required or compilation is skipped. --app-icon
+# must match the package stem. We copy only Assets.car from the compile dir —
+# actool also emits a small flattened .icns that would overwrite our
+# high-res fallback.
+# https://github.com/blackboardsh/electrobun/issues/121
+# https://www.hendrik-erz.de/post/supporting-liquid-glass-icons-in-apps-without-xcode
+# https://github.com/electron/packager/blob/main/src/icon-composer.ts
+HAVE_ICON=0
+if [ -f assets/superterminal.icns ]; then
   cp assets/superterminal.icns "$RES_DIR/"
-  /usr/libexec/PlistBuddy -c "Add :CFBundleIconFile string superterminal.icns" \
+  /usr/libexec/PlistBuddy -c "Add :CFBundleIconFile string superterminal" \
     "$APP/Contents/Info.plist" >/dev/null
-else
-  log "no assets/superterminal.icns — the app will use the generic icon"
+  HAVE_ICON=1
+fi
+if [ -d assets/superterminal.icon ]; then
+  if xcrun --find actool >/dev/null 2>&1; then
+    log "compiling liquid glass icon"
+    COMPILE_DIR="$(mktemp -d)"
+    PLIST_TMP="$(mktemp)"
+    if xcrun actool assets/superterminal.icon \
+        --compile "$COMPILE_DIR" \
+        --output-format human-readable-text \
+        --notices --warnings --errors \
+        --output-partial-info-plist "$PLIST_TMP" \
+        --app-icon superterminal \
+        --include-all-app-icons \
+        --enable-on-demand-resources NO \
+        --development-region en \
+        --target-device mac \
+        --minimum-deployment-target 26.0 \
+        --platform macosx; then
+      cp "$COMPILE_DIR/Assets.car" "$RES_DIR/"
+      /usr/libexec/PlistBuddy -c "Add :CFBundleIconName string superterminal" \
+        "$APP/Contents/Info.plist" >/dev/null
+      HAVE_ICON=1
+    else
+      log "actool failed — shipping .icns only"
+    fi
+    rm -rf "$COMPILE_DIR" "$PLIST_TMP"
+  else
+    log "actool not found — shipping .icns only (no Liquid Glass)"
+  fi
+fi
+if [ "$HAVE_ICON" = 0 ]; then
+  log "no app icon assets — the app will use the generic icon"
 fi
 
 # Ad-hoc signature. Not a Developer ID, so this does not satisfy Gatekeeper for

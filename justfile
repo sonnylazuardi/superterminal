@@ -55,6 +55,13 @@ dev:                        # run the GUI client
     # — the terminals live in the daemon (invariant I1).
     bun packages/app/src/app.tsx
 
+# --- package -------------------------------------------------------------
+icons:                     # rebuild .icns + Icon Composer .icon from the source PNG
+    scripts/generate-icons.sh
+
+dmg *ARGS:                  # macOS .app + .dmg (pass --no-build to skip cargo)
+    scripts/package-macos.sh {{ARGS}}
+
 # --- quality -------------------------------------------------------------
 test:
     cargo test --workspace
