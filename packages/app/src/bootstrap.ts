@@ -71,6 +71,7 @@ export function bootstrap(options: BootstrapOptions): Bootstrapped {
     type: 'ui.setSidebarWidth',
     width: clientState.sidebarWidth ?? tokens.strip.verticalWidth,
   });
+  store.dispatch({ type: 'ui.setFontZoom', zoom: clientState.fontZoom ?? 0 });
 
   const socketPath = argv.socket ?? defaultSocketPath();
   const client = new ControlClient({

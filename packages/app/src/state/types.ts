@@ -100,6 +100,8 @@ export interface UiState {
   verticalTabs: boolean;
   /** Sidebar column width in logical px (Client State). */
   sidebarWidth: number;
+  /** ⌘+ / ⌘− font zoom: points added to `config.font.size` (Client State). */
+  fontZoom: number;
   /** The focused Pane per Tab; a Tab absent here focuses its first Pane. */
   focusedPaneByTab: Record<TabId, SurfaceId>;
   menu: MenuState | null;
@@ -144,6 +146,8 @@ export type UiAction =
   | { type: 'ui.toggleVerticalTabs' }
   | { type: 'ui.setVerticalTabs'; value: boolean }
   | { type: 'ui.setSidebarWidth'; width: number }
+  | { type: 'ui.setFontZoom'; zoom: number }
+  | { type: 'ui.zoomFont'; delta: number }
   | { type: 'pane.focus'; tabId: TabId; surfaceId: SurfaceId }
   | { type: 'menu.open'; tabId: TabId; x: number; y: number }
   | { type: 'menu.close' }

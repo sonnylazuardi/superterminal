@@ -126,6 +126,7 @@ export function clientStateOf(state: WorkspaceState): ClientState {
     window: width > 0 && height > 0 ? { width, height } : null,
     verticalTabs: state.ui.verticalTabs,
     sidebarWidth: state.ui.sidebarWidth,
+    fontZoom: state.ui.fontZoom,
   };
 }
 

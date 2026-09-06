@@ -15,6 +15,7 @@ import {
   type WorkspaceSnapshot,
 } from '@superterminal/protocol-ts';
 import { clampRatio, clampSidebarWidth } from './layout.js';
+import { clampFontZoom } from './zoom.js';
 import type {
   ConnectionState,
   ServerEvent,
@@ -36,6 +37,7 @@ export const initialUiState: UiState = {
   paletteIndex: 0,
   verticalTabs: false,
   sidebarWidth: 220,
+  fontZoom: 0,
   focusedPaneByTab: {},
   menu: null,
   ratioPreview: null,
@@ -315,6 +317,18 @@ export function applyUiAction(state: WorkspaceState, action: UiAction): Workspac
       const width = clampSidebarWidth(action.width);
       if (ui.sidebarWidth === width) return state;
       return withUi(state, { sidebarWidth: width });
+    }
+
+    case 'ui.setFontZoom': {
+      const zoom = clampFontZoom(action.zoom);
+      if (ui.fontZoom === zoom) return state;
+      return withUi(state, { fontZoom: zoom });
+    }
+
+    case 'ui.zoomFont': {
+      const zoom = clampFontZoom(ui.fontZoom + action.delta);
+      if (ui.fontZoom === zoom) return state;
+      return withUi(state, { fontZoom: zoom });
     }
 
     case 'pane.focus': {

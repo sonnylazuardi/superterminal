@@ -621,6 +621,22 @@ describe('applyUiAction', () => {
     expect(without.ui.tabDrag).toBeNull();
   });
 
+  test('font zoom steps, clamps, resets, and dedupes', () => {
+    const s = seeded();
+    expect(s.ui.fontZoom).toBe(0);
+    const up = applyUiAction(s, { type: 'ui.zoomFont', delta: 1 });
+    expect(up.ui.fontZoom).toBe(1);
+    const down = applyUiAction(up, { type: 'ui.zoomFont', delta: -3 });
+    expect(down.ui.fontZoom).toBe(-2);
+    // Past the floor the state is unchanged, identity included.
+    const floor = applyUiAction(s, { type: 'ui.setFontZoom', zoom: -10 });
+    expect(applyUiAction(floor, { type: 'ui.zoomFont', delta: -1 })).toBe(floor);
+    expect(applyUiAction(s, { type: 'ui.setFontZoom', zoom: 999 }).ui.fontZoom).toBe(40);
+    const reset = applyUiAction(down, { type: 'ui.setFontZoom', zoom: 0 });
+    expect(reset.ui.fontZoom).toBe(0);
+    expect(applyUiAction(reset, { type: 'ui.setFontZoom', zoom: 0 })).toBe(reset);
+  });
+
   test('window resize is recorded once', () => {
     const s = applyUiAction(seeded(), { type: 'window.resize', width: 1200, height: 800 });
     expect(s.ui.window).toEqual({ width: 1200, height: 800 });

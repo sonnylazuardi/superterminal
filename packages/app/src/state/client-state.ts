@@ -12,6 +12,7 @@
  */
 
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { clampFontZoom } from './zoom.js';
 import { dirname, join } from 'node:path';
 import { z } from 'zod';
 import { stateDir, type PathEnv } from '../server/paths.js';
@@ -37,9 +38,11 @@ const ClientStateFileSchema = z.object({
   window: z.unknown().optional(),
   verticalTabs: z.unknown().optional(),
   sidebarWidth: z.unknown().optional(),
+  fontZoom: z.unknown().optional(),
 });
 
 const SidebarWidthSchema = z.number().finite().min(SIDEBAR_WIDTH_MIN).max(SIDEBAR_WIDTH_MAX);
+const FontZoomSchema = z.number().finite();
 
 export interface WindowSize {
   width: number;
@@ -53,9 +56,16 @@ export interface ClientState {
   verticalTabs: boolean | null;
   /** Sidebar column width in logical px, within the layout bounds. */
   sidebarWidth: number | null;
+  /** ⌘+ / ⌘− font zoom, in points added to the configured size. */
+  fontZoom: number | null;
 }
 
-export const EMPTY_CLIENT_STATE: ClientState = { window: null, verticalTabs: null, sidebarWidth: null };
+export const EMPTY_CLIENT_STATE: ClientState = {
+  window: null,
+  verticalTabs: null,
+  sidebarWidth: null,
+  fontZoom: null,
+};
 
 /** `$XDG_STATE_HOME/superterminal/client.json` (or the platform equivalent). */
 export function clientStatePath(input: PathEnv = {}): string {
@@ -102,7 +112,14 @@ export function parseClientState(text: string): { state: ClientState; warnings: 
     if (width.success) sidebarWidth = Math.round(width.data);
     else warnings.push('[superterminal] client state: remembered sidebar width ignored');
   }
-  return { state: { window, verticalTabs, sidebarWidth }, warnings };
+  let fontZoom: number | null = null;
+  if (parsed.data.fontZoom !== undefined) {
+    const zoom = FontZoomSchema.safeParse(parsed.data.fontZoom);
+    if (zoom.success) fontZoom = clampFontZoom(zoom.data);
+    else warnings.push('[superterminal] client state: remembered font zoom ignored');
+  }
+
+  return { state: { window, verticalTabs, sidebarWidth, fontZoom }, warnings };
 }
 
 export interface LoadClientStateOptions extends PathEnv {
@@ -141,10 +158,13 @@ export function serializeClientState(state: ClientState): string {
     window?: WindowSize;
     verticalTabs?: boolean;
     sidebarWidth?: number;
+    fontZoom?: number;
   } = { version: CLIENT_STATE_VERSION };
   if (state.window) file.window = state.window;
   if (state.verticalTabs !== null) file.verticalTabs = state.verticalTabs;
   if (state.sidebarWidth !== null) file.sidebarWidth = state.sidebarWidth;
+  // Zero is the default; not writing it keeps a never-zoomed file unchanged.
+  if (state.fontZoom !== null && state.fontZoom !== 0) file.fontZoom = state.fontZoom;
   return `${JSON.stringify(file, null, 2)}\n`;
 }
 
@@ -164,6 +184,7 @@ export function sameClientState(a: ClientState, b: ClientState): boolean {
   return (
     a.verticalTabs === b.verticalTabs &&
     a.sidebarWidth === b.sidebarWidth &&
+    (a.fontZoom ?? 0) === (b.fontZoom ?? 0) &&
     (a.window === b.window ||
       (a.window !== null &&
         b.window !== null &&

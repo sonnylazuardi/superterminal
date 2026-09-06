@@ -14,10 +14,12 @@ const state = (
   window: ClientState['window'],
   verticalTabs: boolean | null,
   sidebarWidth: number | null = null,
+  fontZoom: number | null = null,
 ): ClientState => ({
   window,
   verticalTabs,
   sidebarWidth,
+  fontZoom,
 });
 
 describe('clientStatePath', () => {
@@ -67,6 +69,20 @@ describe('parseClientState', () => {
       expect(parsed).toEqual(state(null, false));
       expect(warnings).toHaveLength(1);
     }
+  });
+
+  test('font zoom round-trips, clamps, and is omitted from the file at zero', () => {
+    expect(parseClientState('{"fontZoom":2}').state.fontZoom).toBe(2);
+    expect(parseClientState('{"fontZoom":-3.4}').state.fontZoom).toBe(-3);
+    expect(parseClientState('{"fontZoom":999}').state.fontZoom).toBe(40);
+    const bad = parseClientState('{"fontZoom":"big"}');
+    expect(bad.state.fontZoom).toBeNull();
+    expect(bad.warnings).toEqual(['[superterminal] client state: remembered font zoom ignored']);
+    expect(JSON.parse(serializeClientState(state(null, null, null, 2)))).toEqual({
+      version: 1,
+      fontZoom: 2,
+    });
+    expect(JSON.parse(serializeClientState(state(null, null, null, 0)))).toEqual({ version: 1 });
   });
 
   test('a sidebar width outside its bounds is dropped; a fractional one rounds', () => {

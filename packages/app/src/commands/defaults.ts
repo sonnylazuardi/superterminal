@@ -21,6 +21,7 @@ import {
   selectTabSurfaces,
 } from '../state/selectors.js';
 import type { TabView, WorkspaceState } from '../state/types.js';
+import { FONT_ZOOM_STEP } from '../state/zoom.js';
 import type { Command, CommandArg, CommandContext } from './types.js';
 
 /** A binding spec: one string for both platforms, or one per platform. */
@@ -235,6 +236,40 @@ export const COMMAND_DEFINITIONS: CommandDefinition[] = [
     bindings: ['mod+shift+b'],
     run(ctx) {
       ctx.store.dispatch({ type: 'ui.toggleVerticalTabs' });
+    },
+  },
+  {
+    id: 'view.zoomIn',
+    title: 'Make Text Bigger',
+    // ⌘= is the unshifted key under ⌘+, so both spellings are bound, like
+    // iTerm. Plain Ctrl+= is nothing to a terminal, so Linux/Windows get the
+    // Windows Terminal chords rather than the Ctrl+Shift `mod` form.
+    bindings: [
+      { darwin: 'mod+=', other: 'ctrl+=' },
+      { darwin: 'mod+shift+=', other: 'ctrl+shift+=' },
+    ],
+    run(ctx) {
+      ctx.store.dispatch({ type: 'ui.zoomFont', delta: FONT_ZOOM_STEP });
+    },
+  },
+  {
+    id: 'view.zoomOut',
+    title: 'Make Text Smaller',
+    bindings: [
+      { darwin: 'mod+-', other: 'ctrl+-' },
+      { darwin: 'mod+shift+-', other: 'ctrl+shift+-' },
+    ],
+    run(ctx) {
+      ctx.store.dispatch({ type: 'ui.zoomFont', delta: -FONT_ZOOM_STEP });
+    },
+  },
+  {
+    id: 'view.zoomReset',
+    title: 'Reset Text Size',
+    bindings: [{ darwin: 'mod+0', other: 'ctrl+0' }],
+    when: (s) => s.ui.fontZoom !== 0,
+    run(ctx) {
+      ctx.store.dispatch({ type: 'ui.setFontZoom', zoom: 0 });
     },
   },
   {

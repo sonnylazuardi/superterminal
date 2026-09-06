@@ -30,6 +30,7 @@ import {
 } from '../state/layout.js';
 import { selectActiveTab, selectFocusedSurfaceId } from '../state/selectors.js';
 import type { TabId } from '../state/types.js';
+import { zoomedFontSize } from '../state/zoom.js';
 import { buildTerminalTheme, type TerminalTheme } from '../theme/tokens.js';
 import '../native/terminal-grid.js';
 import { Divider, GRAB } from './Divider.js';
@@ -211,6 +212,7 @@ function Pane(props: {
     commandBus.getSnapshot,
   );
   const theme: TerminalTheme = buildTerminalTheme(config.theme, config.terminal.boldIsBright);
+  const fontZoom = useWorkspace((s) => s.ui.fontZoom);
   const id = props.surfaceId;
 
   return (
@@ -243,7 +245,8 @@ function Pane(props: {
         // a click. Gated on the palette/Menu so their `<input>` can hold focus.
         focused={props.focused && props.focusable}
         {...(config.font.family ? { fontFamily: config.font.family } : {})}
-        fontSize={config.font.size}
+        // ⌘+ / ⌘− zoom rides on top of the configured size (state/zoom.ts).
+        fontSize={zoomedFontSize(config.font.size, fontZoom)}
         lineHeight={config.font.lineHeight}
         theme={theme}
         cursorStyle={config.terminal.cursorStyle}

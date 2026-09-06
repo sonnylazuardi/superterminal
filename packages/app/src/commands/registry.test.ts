@@ -135,6 +135,9 @@ describe('registry composition', () => {
       'session.switch',
       'session.rename',
       'view.toggleVerticalTabs',
+      'view.zoomIn',
+      'view.zoomOut',
+      'view.zoomReset',
       'edit.copy',
       'edit.paste',
       'surface.clearScrollback',
@@ -319,6 +322,10 @@ describe('passthroughShortcuts', () => {
     expect(list).toContain('alt-1');
     expect(list).toContain('alt-9');
     expect(list).not.toContain('ctrl-t'); // plain Ctrl+T stays terminal input
+    // Zoom: the Windows Terminal chords, not the Ctrl+Shift `mod` form.
+    expect(list).toContain('ctrl-=');
+    expect(list).toContain('ctrl--');
+    expect(list).toContain('ctrl-0');
     expect(new Set(list).size).toBe(list.length);
   });
 
@@ -329,6 +336,10 @@ describe('passthroughShortcuts', () => {
     expect(list).toContain('shift-cmd-p');
     expect(list).toContain('cmd-1');
     expect(list).toContain('ctrl-tab');
+    expect(list).toContain('cmd-=');
+    expect(list).toContain('shift-cmd-=');
+    expect(list).toContain('cmd--');
+    expect(list).toContain('cmd-0');
   });
 
   test('a command with no binding contributes nothing', () => {
