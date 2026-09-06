@@ -152,7 +152,22 @@ it was run at `-j 4` because thin LTO over the GPUI graph will not fit in 7 GB
 at higher parallelism. `sccache` and `mold`/`lld` are not installed here and
 would both help (`docs/plan/04-client-native.md` §2).
 
-macOS arm64: **not measured — no macOS host was available. M0-05 is open.**
+macOS arm64: **measured 2026-08-31.** Host: Darwin 25.6 (M-series), 14 threads,
+24 GB, Xcode CLT 17, `rustc 1.97.1`, default `-j`, `CARGO_PROFILE_RELEASE_DEBUG=0`.
+
+| What | Profile | Time |
+|---|---|---|
+| root workspace (`st-server` + `st-cli`, 163 crates) | debug, `debug=0` | **20 s** |
+| `st-native` cold (GPUI + 749 crates) | release | **2 min 14 s** |
+| `st-native` incremental (one file in `src/`) | release | **1 min 02 s** |
+
+Artifact sizes: `libst_native.dylib` **17 MB** release with `debug=0` — an order
+of magnitude under the 249 MB Linux `.so`, which carries `debug = 1` from the
+root profile. `target/` reached **2.8 GB**, not the ~7 GB the Linux row records,
+for the same reason. Disk budget for a macOS build is therefore ~4.8 GB all in
+(toolchains 1.0 GB, registry 359 MB, zed 88 MB, node_modules 77 MB); deleting
+`crates/st-native/target` and `~/.cargo/registry/src` afterwards brings it to
+~1.75 GB while leaving the app runnable.
 
 **Caveat on how these were obtained.** wsl2-3060 has no `-dev` packages installed
 and no password-less `sudo`, so the apt one-liner in `docs/DEV.md` §1 could not be

@@ -104,10 +104,11 @@ export function Divider(props: DividerProps) {
         justifyContent: 'center',
         ...(horizontalLine ? { height: GRAB } : { width: GRAB }),
         cursor: horizontalLine ? 'row-resize' : 'col-resize',
-        // Opaque windows (Windows, X11) paint white wherever no element
-        // does, so the band needs the surrounding surface's fill rather
-        // than being transparent — otherwise it shows as a bright bar.
-        backgroundColor: tokens.bg.glass,
+        // The band needs the surrounding surface's ground rather than being
+        // transparent, or it shows as a bright bar: an opaque window paints
+        // white wherever no element does, and a blurred one lets a light
+        // backdrop through.
+        backgroundColor: tokens.bg.chrome,
       }}
     >
       <div

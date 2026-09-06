@@ -104,7 +104,7 @@ export function TabStrip() {
         height: tokens.strip.height,
         paddingLeft: tokens.strip.paddingX,
         paddingRight: tokens.strip.paddingX,
-        backgroundColor: tokens.bg.glass,
+        backgroundColor: tokens.bg.chrome,
         borderColor: tokens.border.glass,
         borderBottomWidth: tokens.border.width,
         overflow: 'hidden',

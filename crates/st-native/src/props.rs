@@ -53,24 +53,58 @@ pub const SUPPORTED_EVENTS: &[&str] = &[
     "blur",
 ];
 
-/// Default monospace face, per platform. `"monospace"` is a fontconfig alias,
-/// so it resolves on Linux — but neither CoreText nor DirectWrite resolves it,
-/// and both silently fall back to the proportional UI font. On a proportional
-/// face the advance of `'m'` is ~0.9em instead of ~0.6em, so every cell comes
-/// out ~1.5x too wide with uniform gaps between glyphs. `.SystemUIFont` is
-/// gpui's own alias and is *not* monospace, so we never fall back to it.
-pub const DEFAULT_FONT_FAMILY: &str = if cfg!(target_os = "macos") {
-    "Menlo"
-} else if cfg!(target_os = "windows") {
-    // Guaranteed since Vista. ("Cascadia Mono" is nicer but only ships with
-    // Windows Terminal / Win11.)
-    "Consolas"
-} else {
-    "monospace"
-};
-/// 04 §6: `line_h = font_px * line_height`.
-pub const DEFAULT_LINE_HEIGHT: f32 = 1.2;
-/// Matches the default in `packages/app`'s config schema.
+/// The default terminal family, per platform.
+///
+/// It MUST be a family a platform font system can actually resolve. `"monospace"`
+/// — the previous value — is a CSS generic, not a family name: CoreText has never
+/// heard of it, so gpui's lookup missed and fell through to the proportional
+/// system UI face. The visible symptom is a monospace grid painted with a
+/// variable-width font, i.e. glyphs that drift inside their cells. This also
+/// finally implements the default `docs/config-example.toml` already documents
+/// ("Menlo" on macOS, "DejaVu Sans Mono" on Linux).
+///
+/// `#[cfg]` attributes, not `if cfg!(...)`: see the note on
+/// `element::GridState::write_primary` for what the runtime form costs.
+#[cfg(target_os = "macos")]
+pub const DEFAULT_FONT_FAMILY: &str = "Menlo";
+/// See the macOS arm above.
+#[cfg(target_os = "windows")]
+pub const DEFAULT_FONT_FAMILY: &str = "Consolas";
+/// See the macOS arm above.
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+pub const DEFAULT_FONT_FAMILY: &str = "DejaVu Sans Mono";
+
+/// Families tried, in order, when the requested one cannot be resolved.
+///
+/// Every entry is monospace by construction. `.SystemUIFont` is gpui's own alias
+/// and is *not* monospace, so it never appears here — landing on it is the bug
+/// this list exists to prevent.
+#[cfg(target_os = "macos")]
+pub const MONOSPACE_FALLBACKS: &[&str] = &["Menlo", "Monaco", "Courier New"];
+/// See the macOS arm above.
+#[cfg(target_os = "windows")]
+pub const MONOSPACE_FALLBACKS: &[&str] = &["Consolas", "Courier New"];
+/// See the macOS arm above.
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+pub const MONOSPACE_FALLBACKS: &[&str] =
+    &["DejaVu Sans Mono", "Liberation Mono", "Noto Sans Mono", "monospace"];
+/// 04 §6: `line_h = font_px * line_height`, floored at the font's own line
+/// height (`geometry::CellSize::for_font`).
+///
+/// **1.0, not 1.2.** The multiplier is applied to the font *size*, and 1.0 em is
+/// not a line of text: a face needs `ascent + descent`, ~1.16 em for Menlo. So
+/// 1.0 does not squash anything — it lands exactly on the natural line box,
+/// which is the row height a native macOS terminal uses (both Terminal.app and
+/// iTerm2 start from `ascent + descent + leading` at spacing 1.0). The old 1.2
+/// was ~3% of leading nobody asked for, which is the "looser than my normal
+/// terminal" report this default answers. Note the app's own config still
+/// defaults to 1.2 (`packages/app`'s schema and `docs/config-example.toml`) and
+/// always passes it explicitly, so this constant only governs an element React
+/// mounted without a `lineHeight` — the harness, not the shipped app.
+pub const DEFAULT_LINE_HEIGHT: f32 = 1.0;
+/// Only reached by an element React mounted without a `fontSize` — the app
+/// always passes `config.font.size` (13.0), so this is the harness/test default
+/// rather than the user-facing one.
 pub const DEFAULT_FONT_SIZE: f32 = 14.0;
 
 /// Cursor shape used when the program has not set DECSCUSR.

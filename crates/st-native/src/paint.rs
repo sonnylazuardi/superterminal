@@ -26,8 +26,8 @@ use st_proto::{AbsLine, Modes, SurfaceId};
 
 use crate::element::GridState;
 use crate::geometry::{
-    scrollbar_thumb, CellSize, GridGeometry, SCROLLBAR_MIN_THUMB, SCROLLBAR_THUMB_WIDTH,
-    SCROLLBAR_THUMB_WIDTH_HOVER, SCROLLBAR_WIDTH,
+    scrollbar_thumb, CellSize, FontVMetrics, GridGeometry, SCROLLBAR_MIN_THUMB,
+    SCROLLBAR_THUMB_WIDTH, SCROLLBAR_THUMB_WIDTH_HOVER, SCROLLBAR_WIDTH,
 };
 use crate::props::{CursorStyle, ScrollbarMode};
 use crate::runs::{layout_viewport, RowLayout, RunSpan, StyleKey};
@@ -141,8 +141,27 @@ fn resolve_cell(state: &mut GridState, cx: &mut App) -> CellSize {
         .map_or(state.props.font_size * 0.6, |advance| {
             f32::from(advance.width)
         });
-    let cell = CellSize::new(width, state.props.font_size * state.props.line_height);
 
+    // `TextSystem::descent` hands back `FontMetrics::descent` unchanged, and
+    // that field comes straight from font-kit, which follows OpenType's
+    // `sTypoDescender` and reports the descent below the baseline as a
+    // NEGATIVE number on every loader it has (`core_text.rs` negates
+    // `CTFontGetDescent` explicitly to get there; freetype and directwrite do
+    // the same). gpui's own `LineLayout` negates it a second time before
+    // painting, so the sign you see depends on which API you asked. `abs()` is
+    // the only spelling that is correct either way.
+    let metrics = FontVMetrics::new(
+        f32::from(cx.text_system().ascent(font_id, font_size)).abs(),
+        f32::from(cx.text_system().descent(font_id, font_size)).abs(),
+    );
+    let cell = CellSize::for_font(
+        width,
+        state.props.font_size,
+        state.props.line_height,
+        metrics.natural_line_height,
+    );
+
+    state.font_metrics = metrics;
     state.cell = Some(cell);
     state.cell_font_key = Some(key);
     // Both the glyph geometry and the forced advance are baked into a cached

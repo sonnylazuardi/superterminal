@@ -9,12 +9,44 @@ use st_client_core::selection::CellMetrics;
 
 use crate::props::Padding;
 
+/// The vertical metrics of the resolved font, in px at the resolved size.
+///
+/// Read back through `get_prop("fontMetrics")`, which is how a headless
+/// harness can check a line-spacing change without a screenshot: the cell
+/// height is only meaningful next to the metrics it was derived from.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct FontVMetrics {
+    /// Distance from the baseline to the top of the glyph covers.
+    pub ascent: f32,
+    /// Distance from the baseline to the bottom of the glyph covers, as a
+    /// positive number (see `paint::resolve_cell` for the sign trap).
+    pub descent: f32,
+    /// `ascent + descent`: the shortest line box this face renders without
+    /// clipping. Note this deliberately excludes the font's `line_gap`, which
+    /// is the *recommended extra leading* — precisely what a terminal does not
+    /// want, and what gpui exposes no accessor for anyway.
+    pub natural_line_height: f32,
+}
+
+impl FontVMetrics {
+    /// From an ascent and a descent that are already positive px.
+    #[must_use]
+    pub fn new(ascent: f32, descent: f32) -> Self {
+        Self {
+            ascent,
+            descent,
+            natural_line_height: ascent + descent,
+        }
+    }
+}
+
 /// One cell's box, derived from the font once per font change (04 §6).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CellSize {
     /// Advance width of `'m'` in the resolved font at the resolved size.
     pub width: f32,
-    /// `font_size * line_height`.
+    /// `max(font_size * line_height, natural_line_height)` — see
+    /// [`CellSize::for_font`].
     pub height: f32,
 }
 
@@ -35,6 +67,35 @@ impl CellSize {
                 1.0
             },
         }
+    }
+
+    /// The cell for one resolved font: `font_size * line_height`, floored at
+    /// the font's own natural line height.
+    ///
+    /// **Why the floor.** `line_height` is documented as a multiple of the
+    /// font size, but 1.0 em is not a line of text — a face needs
+    /// `ascent + descent`, and for Menlo (macOS's default terminal face, and
+    /// our `DEFAULT_FONT_FAMILY` there) that is ~1.16 em. So a bare multiplier
+    /// is a trap in both directions: 1.0 clips descenders, while anything
+    /// above ~1.16 adds leading. Flooring makes `line_height = 1.0` mean "the
+    /// tightest box this font can render", which is what a native macOS
+    /// terminal shows — both Terminal.app and iTerm2 derive their row height
+    /// from `ascent + descent + leading` at spacing 1.0 — and leaves larger
+    /// values meaning exactly what they say.
+    ///
+    /// The visible consequence: `line_height` values between 1.0 and the
+    /// font's natural ratio are all the same cell. That is intentional; the
+    /// alternative is a default that silently clips glyphs.
+    #[must_use]
+    pub fn for_font(width: f32, font_size: f32, line_height: f32, natural_line_height: f32) -> Self {
+        let floor = if natural_line_height.is_finite() && natural_line_height > 0.0 {
+            natural_line_height
+        } else {
+            // No metrics for this face: fall back to the bare multiplier
+            // rather than to a made-up ratio.
+            0.0
+        };
+        Self::new(width, (font_size * line_height).max(floor))
     }
 }
 
@@ -282,6 +343,34 @@ mod tests {
         assert_eq!((geometry.cols, geometry.rows), (1, 1));
         let squashed = GridGeometry::fit(4.0, 4.0, cell(), Padding::default());
         assert_eq!((squashed.cols, squashed.rows), (1, 1));
+    }
+
+    #[test]
+    fn the_font_line_height_is_a_floor_on_the_cell() {
+        // Menlo at 14 px: ascent 12.99, descent 3.30, natural 16.29.
+        let natural = 16.29;
+        // 1.0 no longer clips the descenders — it lands on the natural box.
+        let tight = CellSize::for_font(8.43, 14.0, 1.0, natural);
+        assert!((tight.height - natural).abs() < 0.001, "{tight:?}");
+        // …and neither does anything below the natural ratio.
+        assert_eq!(CellSize::for_font(8.43, 14.0, 0.8, natural).height, tight.height);
+        // Above it the multiplier means what it says: leading, on purpose.
+        let loose = CellSize::for_font(8.43, 14.0, 1.5, natural);
+        assert!((loose.height - 21.0).abs() < 0.001, "{loose:?}");
+    }
+
+    #[test]
+    fn a_face_with_no_metrics_falls_back_to_the_bare_multiplier() {
+        for broken in [0.0, f32::NAN, -3.0, f32::INFINITY] {
+            let cell = CellSize::for_font(8.0, 14.0, 1.2, broken);
+            assert!((cell.height - 16.8).abs() < 0.001, "{broken} -> {cell:?}");
+        }
+    }
+
+    #[test]
+    fn natural_line_height_is_the_sum_of_the_two_halves() {
+        let metrics = FontVMetrics::new(12.99, 3.3);
+        assert!((metrics.natural_line_height - 16.29).abs() < 0.001, "{metrics:?}");
     }
 
     #[test]

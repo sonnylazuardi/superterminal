@@ -82,8 +82,18 @@ admin). The full chain, all on Windows:
    ```
 2. Compile the single-file client (run from the repo root):
    ```bat
-   bun build --compile packages/app/src/app.tsx --outfile dist/superterminal.exe
+   bun build --compile --windows-icon=assets/superterminal.ico packages/app/src/app.tsx --outfile dist/superterminal.exe
    copy packages\native\superterminal-native.win32-x64-msvc.node dist\
+   ```
+   `--windows-icon` stamps `assets/superterminal.ico` (a multi-size ICO
+   cut from `assets/superterminal.png`, 16 to 256 px) into the exe's
+   resources, so Explorer, the taskbar and the window title bar show the
+   terminal glyph instead of Bun's default. Bun 1.4.0 leaves its own
+   `IDI_MYICON` group behind, pointing at the 16 px entry as if it were
+   256 px, and Windows picks that group first (blurry icon). Repair the
+   resources in place, before `editbin`:
+   ```bat
+   powershell -ExecutionPolicy Bypass -File packaging\windows\fix-exe-icon.ps1 dist\superterminal.exe assets\superterminal.ico
    ```
    The `.node` ships **side by side**, found via the "beside a compiled
    binary" probe in `packages/app/src/native/locate.ts`. Do not use
@@ -100,11 +110,14 @@ admin). The full chain, all on Windows:
    `SUPERTERMINAL_TCP=127.0.0.1:7171`, adds a Start Menu shortcut):
    ```bat
    cd packaging\build  &  rem a scratch dir with superterminal.exe,
-                         rem superterminal-native.win32-x64-msvc.node, Product.wxs
+                         rem superterminal-native.win32-x64-msvc.node,
+                         rem superterminal.ico, Product.wxs
    candle.exe Product.wxs -o obj\
-   light.exe obj\Product.wixobj -o Superterminal-0.1.0.msi
-   msiexec /i Superterminal-0.1.0.msi /passive
+   light.exe obj\Product.wixobj -o Superterminal-0.1.4.msi
+   msiexec /i Superterminal-0.1.4.msi /passive
    ```
+   `Product.wxs` registers `superterminal.ico` as the Start Menu shortcut
+   icon and the Apps & features (`ARPPRODUCTICON`) entry.
    Unsigned, like the rest of v1 packaging (Q5/Q35): expect a SmartScreen
    prompt on first install from another machine.
 

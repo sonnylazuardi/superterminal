@@ -12,6 +12,26 @@
  * additionally looks for the other two so a server built to a different doc is
  * still found instead of being silently duplicated. `$SUPERTERMINAL_SOCKET`
  * overrides everything and is what `just dev` sets.
+ *
+ * RESOLVED (macOS bring-up, 2026-08-31): the two planning docs disagree on the
+ * macOS *directory*, and this file used to follow the losing one, which made the
+ * client unable to find a daemon on macOS at all —
+ *
+ *   - 02 §1.1  says `~/Library/Application Support/superterminal/server.sock`
+ *   - 03 §2    says `$XDG_RUNTIME_DIR/superterminal/`, falling back to
+ *              `$TMPDIR/superterminal-<uid>/`
+ *
+ * `crates/st-config/src/paths.rs` implements 03 §2 on BOTH platforms, and that
+ * is the code the daemon and the `st` CLI actually run: a freshly built
+ * `superterminald` on macOS listens at `$TMPDIR/superterminal-<uid>/server.sock`.
+ * This module therefore mirrors `Paths::runtime_dir` exactly. Note that
+ * `ALTERNATE_SOCKET_FILENAMES` could never have covered this gap: it varies the
+ * *file* name, not the directory. The 02 §1.1 location is kept as an extra probe
+ * candidate so a daemon that does bind there is still found.
+ *
+ * Windows is the one platform with no local daemon at all: it lives in WSL and
+ * is reached over loopback TCP, so every "socket path" there is a `tcp://`
+ * target (see `TCP_ENV_VAR`) and the filesystem branches are only a fallback.
  */
 
 import { homedir, userInfo } from 'node:os';
@@ -27,6 +47,8 @@ export const ALTERNATE_SOCKET_FILENAMES = ['control.sock', 'sock'];
  */
 export const TCP_ENV_VAR = 'SUPERTERMINAL_TCP';
 export const TCP_SCHEME = 'tcp://';
+
+export const APP_DIR = 'superterminal';
 
 export interface PathEnv {
   env?: Record<string, string | undefined>;
@@ -59,22 +81,45 @@ export function tcpTarget(input: PathEnv = {}): string | null {
   return parseTcpTarget(target) ? target : null;
 }
 
+/**
+ * The runtime directory holding the socket and the lock file.
+ *
+ * Mirrors `crates/st-config/src/paths.rs::Paths::runtime_dir`, which applies the
+ * same order on every platform macOS included — there is deliberately NO
+ * `~/Library/Application Support` branch here, because no daemon binds there:
+ *
+ *   $SUPERTERMINAL_RUNTIME_DIR -> $XDG_RUNTIME_DIR/superterminal
+ *                              -> $TMPDIR/superterminal-<uid>
+ *                              -> /tmp/superterminal-<uid>
+ *
+ * Windows is the exception, and only as a fallback: no daemon ever runs beside
+ * a Windows client in v1, so this is reached only when `$SUPERTERMINAL_TCP` is
+ * unset.
+ */
 function runtimeDir({ env = process.env, platform = process.platform, uid }: PathEnv): string {
+  const override = env['SUPERTERMINAL_RUNTIME_DIR'];
+  if (override) return override;
+
   if (platform === 'win32') {
-    // No daemon ever runs beside a Windows client in v1 (it lives in WSL),
-    // so this is only a fallback when $SUPERTERMINAL_TCP is unset.
     const base = env['LOCALAPPDATA'] || env['TEMP'] || env['TMP'] || homedir();
-    return join(base, 'superterminal');
+    return join(base, APP_DIR);
   }
-  if (platform === 'darwin') {
-    // 02 §1.1. 03 §2 suggests $TMPDIR instead; if the daemon lands there,
-    // $SUPERTERMINAL_SOCKET or ALTERNATE_SOCKET_FILENAMES cover the gap.
-    return join(env['HOME'] || homedir(), 'Library', 'Application Support', 'superterminal');
-  }
+
   const xdg = env['XDG_RUNTIME_DIR'];
-  if (xdg) return join(xdg, 'superterminal');
+  if (xdg) return join(xdg, APP_DIR);
+
+  const tmp = env['TMPDIR'] || '/tmp';
   const id = uid ?? safeUid();
-  return join('/tmp', `superterminal-${id}`);
+  return join(tmp, `${APP_DIR}-${id}`);
+}
+
+/**
+ * The location 02 §1.1 specifies for macOS. Nothing writes here (the daemon
+ * follows 03 §2), but it is probed so a daemon that does is found instead of
+ * being silently duplicated.
+ */
+function legacyMacRuntimeDir({ env = process.env }: PathEnv): string {
+  return join(env['HOME'] || homedir(), 'Library', 'Application Support', APP_DIR);
 }
 
 function safeUid(): number {
@@ -97,27 +142,47 @@ export function defaultSocketPath(input: PathEnv = {}): string {
 /** Every path worth probing before deciding no server is running. */
 export function probeCandidates(input: PathEnv = {}): string[] {
   const env = input.env ?? process.env;
+  const platform = input.platform ?? process.platform;
+
   const tcp = tcpTarget({ ...input, env });
   if (tcp) return [tcp];
   const override = env['SUPERTERMINAL_SOCKET'];
   if (override) return [override];
-  const dir = runtimeDir(input);
-  return [SOCKET_FILENAME, ...ALTERNATE_SOCKET_FILENAMES].map((name) => join(dir, name));
+
+  const dirs = [runtimeDir(input)];
+  if (platform === 'darwin') dirs.push(legacyMacRuntimeDir(input));
+
+  const names = [SOCKET_FILENAME, ...ALTERNATE_SOCKET_FILENAMES];
+  const out = dirs.flatMap((dir) => names.map((name) => join(dir, name)));
+  return [...new Set(out)];
 }
 
 /**
- * `$XDG_STATE_HOME/superterminal`, else `~/.local/state/superterminal` (03 §2).
- * On Windows there is no XDG convention and no daemon beside the client, so
- * the client's own state goes where `runtimeDir` already goes:
- * `%LOCALAPPDATA%\superterminal`.
+ * The state directory holding `workspace.json` and `logs/`.
+ *
+ * Mirrors `Paths::state_dir`: `$SUPERTERMINAL_STATE_DIR` ->
+ * `$XDG_STATE_HOME/superterminal` -> `~/.local/state/superterminal` on Linux,
+ * `~/Library/Application Support/superterminal` on macOS (03 §2). On Windows
+ * there is no XDG convention and no daemon beside the client, so the client's
+ * own state goes where `runtimeDir` already goes: `%LOCALAPPDATA%\superterminal`.
  */
 export function stateDir(input: PathEnv = {}): string {
   const env = input.env ?? process.env;
   const platform = input.platform ?? process.platform;
+
+  const override = env['SUPERTERMINAL_STATE_DIR'];
+  if (override) return override;
+
   if (platform === 'win32') {
     const base = env['LOCALAPPDATA'] || env['TEMP'] || env['TMP'] || homedir();
-    return join(base, 'superterminal');
+    return join(base, APP_DIR);
   }
-  const base = env['XDG_STATE_HOME'] || join(env['HOME'] || homedir(), '.local', 'state');
-  return join(base, 'superterminal');
+
+  const xdg = env['XDG_STATE_HOME'];
+  if (xdg) return join(xdg, APP_DIR);
+
+  const home = env['HOME'] || homedir();
+  return platform === 'darwin'
+    ? join(home, 'Library', 'Application Support', APP_DIR)
+    : join(home, '.local', 'state', APP_DIR);
 }
