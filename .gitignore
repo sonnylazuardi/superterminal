@@ -13,3 +13,6 @@ docs/perf/*.json
 *.log
 
 .DS_Store
+
+# WSL: NTFS mark-of-the-web streams exposed as sibling files
+*:Zone.Identifier
