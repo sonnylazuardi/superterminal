@@ -17,4 +17,6 @@ pub use actor::{
     WorkspaceActor, WorkspaceCommand, WorkspaceHandle,
 };
 pub use model::{Session, Surface, SurfaceStatus, Tab, Workspace, DEFAULT_SESSION_NAME};
-pub use spawn::{NullSpawner, SpawnError, SpawnSpec, SpawnedSurface, SurfaceSpawner};
+pub use spawn::{
+    NullSpawner, ScrollbackUsage, SpawnError, SpawnSpec, SpawnedSurface, SurfaceSpawner,
+};

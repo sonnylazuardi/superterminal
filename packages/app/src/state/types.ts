@@ -7,6 +7,7 @@ import type {
   TabId,
   WorkspaceSnapshot,
 } from '@superterminal/protocol-ts';
+import type { WindowPlacement } from './client-state.js';
 
 export type { Layout, SessionId, SplitPath, SurfaceId, TabId };
 
@@ -111,7 +112,8 @@ export interface UiState {
   renamingSessionId: SessionId | null;
   /** Tab awaiting a "really close? something is running" confirmation. */
   confirmingCloseTabId: TabId | null;
-  window: { width: number; height: number };
+  /** The live Window Placement (Client State); size is the paintable size. */
+  window: WindowPlacement;
   toasts: Toast[];
   nextToastId: number;
 }
@@ -163,5 +165,6 @@ export type UiAction =
   | { type: 'surface.bell'; surfaceId: SurfaceId }
   | { type: 'surface.clearBell'; surfaceId: SurfaceId }
   | { type: 'window.resize'; width: number; height: number }
+  | { type: 'ui/window-placed'; placement: WindowPlacement }
   | { type: 'toast.push'; text: string; kind?: Toast['kind'] }
   | { type: 'toast.dismiss'; id: number };

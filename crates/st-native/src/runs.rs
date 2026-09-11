@@ -110,7 +110,7 @@ pub struct RowLayout {
     pub runs: Vec<RunSpan>,
 }
 
-/// Lays out one row.
+/// Lays out one row into a fresh [`RowLayout`].
 ///
 /// * `selected` is the inclusive column range the selection covers on this
 ///   line, as [`st_client_core::Selection::cols_on`] reports it.
@@ -127,6 +127,32 @@ pub fn layout_row(
     selected: Option<(u16, u16)>,
 ) -> RowLayout {
     let mut layout = RowLayout::default();
+    layout_row_into(&mut layout, row, cols, styles, palette, selected);
+    layout
+}
+
+/// [`layout_row`] into an existing [`RowLayout`], reusing its buffers.
+///
+/// For callers that keep one [`RowLayout`] per viewport row across frames
+/// (B.2 step 5): the `Vec`s keep their capacity and the [`RunSpan`] strings are
+/// refilled in place, so a steady screen stops allocating per run per frame.
+/// Runs the new row does not use are truncated. `layout_viewport_into` is the
+/// whole-viewport form of this.
+pub fn layout_row_into(
+    layout: &mut RowLayout,
+    row: &Row,
+    cols: u16,
+    styles: &StyleTable,
+    palette: &Palette,
+    selected: Option<(u16, u16)>,
+) {
+    layout.backgrounds.clear();
+    // Number of live runs in `layout.runs` after this call; the rest is stale
+    // and gets truncated below.
+    let mut used = 0usize;
+    // One scratch buffer per row: each cell's text is pushed into the run's
+    // own (reused) `String`, so no per-cell allocation happens.
+    let mut text = String::new();
     let mut col = 0u16;
     while col < cols {
         let cell = row.cell_at(usize::from(col));
@@ -148,7 +174,7 @@ pub fn layout_row(
         }
 
         let key = StyleKey::from_resolved(&resolved);
-        let text = cell_text(row, cell);
+        cell_text_into(&mut text, row, cell);
         let wide = cell.flags.contains(CellFlags::WIDE);
         // Exactly one codepoint, not wide, not a grapheme cluster from the
         // side table: the only shape `sprites::sprite_for` knows how to draw.
@@ -156,14 +182,23 @@ pub fn layout_row(
             && !cell.flags.contains(CellFlags::GRAPHEME_EXT)
             && text.chars().count() == 1
             && text.chars().next().is_some_and(crate::sprites::is_sprite);
-        push_run(&mut layout.runs, col, width, &text, key, wide, sprite);
+        append_run(
+            &mut layout.runs,
+            &mut used,
+            col,
+            width,
+            &text,
+            key,
+            wide,
+            sprite,
+        );
 
         col += width;
     }
+    layout.runs.truncate(used);
 
     layout.runs.retain(|run| !is_droppable(run));
     trim_trailing_blanks(&mut layout.runs);
-    layout
 }
 
 /// Drops the run of padding spaces every row ends in.
@@ -191,20 +226,25 @@ fn trim_trailing_blanks(runs: &mut Vec<RunSpan>) {
     }
 }
 
-/// The text one cell contributes: a grapheme cluster from the row's side
-/// table, the codepoint, or a space when the codepoint is not a character.
-fn cell_text(row: &Row, cell: st_proto::PackedCell) -> String {
+/// The text one cell contributes, written into a reused buffer: a grapheme
+/// cluster from the row's side table, the codepoint, or a space when the
+/// codepoint is not a character.
+fn cell_text_into(out: &mut String, row: &Row, cell: st_proto::PackedCell) {
+    out.clear();
     if cell.flags.contains(CellFlags::GRAPHEME_EXT) {
-        return row.grapheme(cell).unwrap_or(" ").to_string();
+        out.push_str(row.grapheme(cell).unwrap_or(" "));
+        return;
     }
     // A zero codepoint is an unwritten cell, and `WIDE_LEADING_SPACER` is the
     // filler a wide char wrapped from the previous line leaves behind.
     if cell.codepoint == 0 || cell.flags.contains(CellFlags::WIDE_LEADING_SPACER) {
-        return " ".to_string();
+        out.push(' ');
+        return;
     }
-    char::from_u32(cell.codepoint)
-        .filter(|ch| !ch.is_control())
-        .map_or_else(|| " ".to_string(), String::from)
+    match char::from_u32(cell.codepoint).filter(|ch| !ch.is_control()) {
+        Some(ch) => out.push(ch),
+        None => out.push(' '),
+    }
 }
 
 /// Appends a background, merging with the previous span when it is adjacent
@@ -219,11 +259,13 @@ fn push_bg(spans: &mut Vec<BgSpan>, col: u16, cells: u16, color: Rgb) {
     spans.push(BgSpan { col, cells, color });
 }
 
-/// Appends a run, merging with the previous one when it is adjacent, shares
-/// the style key, and is the same kind (shaped text with shaped text, sprites
-/// with sprites).
-fn push_run(
+/// Appends a run at slot `used`, whose `String` is refilled in place when the
+/// slot already exists, merging with the previous live run when it is adjacent,
+/// shares the style key, and is the same kind (shaped text with shaped text,
+/// sprites with sprites).
+fn append_run(
     runs: &mut Vec<RunSpan>,
+    used: &mut usize,
     col: u16,
     cells: u16,
     text: &str,
@@ -231,23 +273,34 @@ fn push_run(
     wide: bool,
     sprite: bool,
 ) {
-    if !wide {
-        if let Some(last) = runs.last_mut() {
-            if !last.wide && last.sprite == sprite && last.key == key && last.col + last.cells == col {
-                last.cells += cells;
-                last.text.push_str(text);
-                return;
-            }
+    if !wide && *used > 0 {
+        let last = &mut runs[*used - 1];
+        if !last.wide && last.sprite == sprite && last.key == key && last.col + last.cells == col {
+            last.cells += cells;
+            last.text.push_str(text);
+            return;
         }
     }
-    runs.push(RunSpan {
-        col,
-        cells,
-        text: text.to_string(),
-        key,
-        wide,
-        sprite,
-    });
+    if *used == runs.len() {
+        runs.push(RunSpan {
+            col,
+            cells,
+            text: text.to_string(),
+            key,
+            wide,
+            sprite,
+        });
+    } else {
+        let run = &mut runs[*used];
+        run.col = col;
+        run.cells = cells;
+        run.text.clear();
+        run.text.push_str(text);
+        run.key = key;
+        run.wide = wide;
+        run.sprite = sprite;
+    }
+    *used += 1;
 }
 
 /// A run of nothing but spaces in an undecorated style paints no pixels.
@@ -270,15 +323,41 @@ pub fn layout_viewport(
     palette: &Palette,
 ) -> Vec<RowLayout> {
     let mut out = Vec::with_capacity(usize::from(rows));
-    for index in 0..u64::from(rows) {
-        let line = st_proto::AbsLine::new(top.get() + index);
+    layout_viewport_into(&mut out, replica, cols, rows, top, selection, palette);
+    out
+}
+
+/// [`layout_viewport`] into `out`, reusing its row buffers.
+///
+/// `out` is resized to exactly `rows` entries; each entry's [`RowLayout`] is
+/// refilled in place, strings included, so an element that keeps one
+/// `Vec<RowLayout>` in its state stops allocating runs and text every frame
+/// (B.2 step 5). Rows the Replica has not cached are cleared, exactly as
+/// [`layout_viewport`] leaves them empty.
+pub fn layout_viewport_into(
+    out: &mut Vec<RowLayout>,
+    replica: &st_client_core::Replica,
+    cols: u16,
+    rows: u16,
+    top: st_proto::AbsLine,
+    selection: Option<&st_client_core::Selection>,
+    palette: &Palette,
+) {
+    let rows = usize::from(rows);
+    out.truncate(rows);
+    out.resize_with(rows, RowLayout::default);
+    for (index, layout) in out.iter_mut().enumerate() {
+        let line = st_proto::AbsLine::new(top.get() + index as u64);
         let selected = selection.and_then(|selection| selection.cols_on(line, cols));
-        match replica.line(line) {
-            Some(row) => out.push(layout_row(row, cols, replica.styles(), palette, selected)),
-            None => out.push(RowLayout::default()),
+        if let Some(row) = replica.line(line) {
+            layout_row_into(layout, row, cols, replica.styles(), palette, selected);
+        } else {
+            // Not cached (a FetchHistory is in flight): no stale runs from the
+            // previous frame may survive.
+            layout.backgrounds.clear();
+            layout.runs.clear();
         }
     }
-    out
 }
 
 /// A tiny LRU keyed on `(text, style)` (04 §6 step 3).
@@ -627,7 +706,10 @@ mod tests {
         assert_eq!(layout.runs[0].text, "ab");
         assert!(!layout.runs[0].sprite);
         assert_eq!(layout.runs[1].text, "▀▄");
-        assert!(layout.runs[1].sprite, "block elements are drawn, not shaped");
+        assert!(
+            layout.runs[1].sprite,
+            "block elements are drawn, not shaped"
+        );
         assert_eq!(layout.runs[1].col, 2);
         assert_eq!(layout.runs[1].cells, 2);
         assert_eq!(layout.runs[2].text, "c");
@@ -776,6 +858,78 @@ mod tests {
         );
         assert_eq!(layouts.len(), 3);
         assert!(layouts.iter().all(|layout| layout.runs.is_empty()));
+    }
+
+    #[test]
+    fn a_reused_viewport_buffer_is_cleared_and_keeps_its_allocations() {
+        let first = replica_of(&["hello world", "second line"], 20);
+        let mut out = Vec::new();
+        layout_viewport_into(
+            &mut out,
+            &first,
+            20,
+            2,
+            first.first_visible_line(),
+            None,
+            &palette(),
+        );
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].runs[0].text, "hello world");
+        let capacity = out[0].runs.capacity();
+        assert!(capacity > 0, "the first pass allocated the run buffer");
+
+        // A shorter Replica into a taller buffer: the stale runs must be gone,
+        // and the first row's Vec must be the same allocation, not a new one.
+        let second = replica_of(&["x"], 20);
+        layout_viewport_into(
+            &mut out,
+            &second,
+            20,
+            3,
+            second.first_visible_line(),
+            None,
+            &palette(),
+        );
+        assert_eq!(out.len(), 3, "resized to the requested height");
+        assert_eq!(out[0].runs[0].text, "x");
+        assert!(out[1].runs.is_empty(), "stale runs from the first pass");
+        assert!(out[2].runs.is_empty());
+        assert_eq!(out[0].runs.capacity(), capacity, "run buffer was reused");
+    }
+
+    #[test]
+    fn a_reused_run_buffer_refills_text_and_truncates_stale_runs() {
+        let palette = palette();
+        let red = Style {
+            fg: Color::Indexed(1),
+            ..Style::DEFAULT
+        };
+        let styles = table(&[red]);
+
+        // First frame: two runs, "ab" red then "cd" default.
+        let mut row = Row::new();
+        for ch in "ab".chars() {
+            row.cells.push(PackedCell::from_char(ch, StyleIdx::new(1)));
+        }
+        for ch in "cd".chars() {
+            row.cells.push(PackedCell::from_char(ch, StyleIdx::new(0)));
+        }
+        let mut layout = RowLayout::default();
+        layout_row_into(&mut layout, &row, 4, &styles, &palette, None);
+        assert_eq!(layout.runs.len(), 2);
+        let capacity = layout.runs[0].text.capacity();
+
+        // Second frame: one shorter run. Its text must reuse the first run's
+        // allocation, and the stale second run must be truncated away.
+        let short = text_row("hi", 0);
+        layout_row_into(&mut layout, &short, 4, &styles, &palette, None);
+        assert_eq!(layout.runs.len(), 1, "the stale second run survived");
+        assert_eq!(layout.runs[0].text, "hi");
+        assert_eq!(
+            layout.runs[0].text.capacity(),
+            capacity,
+            "the run text was reallocated instead of refilled"
+        );
     }
 
     #[test]

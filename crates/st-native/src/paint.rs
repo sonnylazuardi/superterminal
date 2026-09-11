@@ -35,7 +35,7 @@ use crate::geometry::{
     SCROLLBAR_THUMB_WIDTH, SCROLLBAR_THUMB_WIDTH_HOVER, SCROLLBAR_WIDTH,
 };
 use crate::props::{CursorStyle, ScrollbarMode};
-use crate::runs::{layout_viewport, RowLayout, RunSpan, StyleKey};
+use crate::runs::{layout_viewport_into, RowLayout, RunSpan, StyleKey};
 use crate::sprites::{sprite_for, Arc, Corner, Rect, Sprite};
 use crate::theme::{rgba, rgba_with_alpha};
 
@@ -102,7 +102,10 @@ pub fn paint_frame(
 
     request_resize(state, surface, geometry);
 
-    let Some(frame) = read_frame(state, surface, geometry) else {
+    // The row buffers live in the element; `read_frame` borrows them only
+    // while it fills them, and they are put back after painting (B.2 step 5).
+    let rows = std::mem::take(&mut state.row_layouts);
+    let Some(mut frame) = read_frame(state, surface, geometry, rows) else {
         return false;
     };
 
@@ -115,6 +118,7 @@ pub fn paint_frame(
     paint_cursor(state, &frame, bounds, geometry, window, cx);
     paint_scrollbar(state, &frame, bounds, geometry, window);
 
+    state.row_layouts = std::mem::take(&mut frame.rows);
     state.title = frame.title;
     state.modes = frame.modes;
     state.content_lines = frame.content_lines;
@@ -207,17 +211,22 @@ fn request_history(state: &mut GridState, surface: SurfaceId, from: u64, count: 
     }
 }
 
-/// Copies the frame out of the Replica.
+/// Copies the frame out of the Replica, filling `row_layouts` in place.
 ///
 /// The lock is held across the run-grouping pass, not just a memcpy as 04 §6
 /// suggests: grouping needs the `StyleTable`, and cloning a 4 096-entry table
 /// every frame costs far more than the few microseconds the pass takes over
 /// `cols × rows` cells. The Data Plane thread's only other work under this
 /// lock is applying a Delta, which is the same order of magnitude.
+///
+/// `row_layouts` is the element's reusable viewport buffer (B.2 step 5); on
+/// failure it is handed back to the element unchanged so the next frame can
+/// try again.
 fn read_frame(
     state: &mut GridState,
     surface: SurfaceId,
     geometry: GridGeometry,
+    mut row_layouts: Vec<RowLayout>,
 ) -> Option<FrameData> {
     let selection = state.selection;
     let palette = &state.props.palette;
@@ -225,22 +234,28 @@ fn read_frame(
     let fallback_style = state.props.cursor_style;
     let fallback_blink = state.props.cursor_blink;
 
-    let handle = state.handle.as_ref()?;
+    let Some(handle) = state.handle.as_ref() else {
+        state.row_layouts = row_layouts;
+        return None;
+    };
     let frame = handle.with_replica(surface, |replica| {
         let replica_size = (replica.cols(), replica.rows());
         // Q40: a Replica that has not caught up with the resize is letterboxed
         // rather than reflowed; we paint the intersection.
         let cols = geometry.cols.min(replica.cols());
-        let rows = geometry.rows.min(replica.rows());
+        let rows_painted = geometry.rows.min(replica.rows());
         let offset = scroll_offset.min(replica.max_scroll_offset());
         let range = replica.viewport_range(offset);
 
         // Lines the local history cache has not reached yet come out blank and
-        // are fetched below; the frame is never held up on the network.
-        let rows_out = layout_viewport(
+        // are fetched below; the frame is never held up on the network. The
+        // buffer is refilled, never reallocated, while the viewport holds
+        // steady.
+        layout_viewport_into(
+            &mut row_layouts,
             replica,
             cols,
-            rows,
+            rows_painted,
             range.start,
             selection.as_ref(),
             palette,
@@ -248,7 +263,7 @@ fn read_frame(
 
         let cursor = replica.cursor();
         let cursor_visible =
-            replica.cursor_visible_at(offset) && cursor.row < rows && cursor.col < cols;
+            replica.cursor_visible_at(offset) && cursor.row < rows_painted && cursor.col < cols;
 
         let cached = replica.cached_history_range();
         let missing_history = crate::geometry::missing_history_page(
@@ -259,7 +274,9 @@ fn read_frame(
         );
 
         FrameData {
-            rows: rows_out,
+            // Handed over from the element by `read_frame` below; the empty
+            // Vec allocates nothing.
+            rows: Vec::new(),
             cursor: cursor_visible.then_some((cursor.col, cursor.row)),
             cursor_style: if cursor.shape == st_proto::CursorShape::default() {
                 fallback_style
@@ -273,7 +290,7 @@ fn read_frame(
             viewport_top: range.start.get(),
             scroll_offset: offset,
             cols,
-            rows_painted: rows,
+            rows_painted,
             replica_size,
             missing_history,
         }
@@ -282,7 +299,18 @@ fn read_frame(
     // Clearing the dirty flag *after* reading is what makes a Delta that lands
     // mid-frame schedule the next one instead of being lost (Q27).
     let _ = handle.take_dirty();
-    frame
+
+    match frame {
+        Some(mut frame) => {
+            frame.rows = row_layouts;
+            Some(frame)
+        }
+        None => {
+            // No Replica for this Surface (yet): keep the buffer for later.
+            state.row_layouts = row_layouts;
+            None
+        }
+    }
 }
 
 fn paint_backgrounds(
@@ -326,7 +354,9 @@ fn paint_glyphs(
 
     for row_index in 0..frame.rows.len() {
         for run_index in 0..frame.rows[row_index].runs.len() {
-            let run = frame.rows[row_index].runs[run_index].clone();
+            // Borrow the run: it lives in `frame`, not `state`, so the mutable
+            // cache below does not need a clone per run per frame (B.2 step 5).
+            let run = &frame.rows[row_index].runs[run_index];
             let (x, y) = geometry.cell_origin(run.col, row_index as u16);
             let origin = point(bounds.origin.x + px(x), bounds.origin.y + px(y));
             if run.sprite {
@@ -335,7 +365,7 @@ fn paint_glyphs(
             }
             let line = shaped_line(
                 state,
-                &run,
+                run,
                 geometry.cell,
                 font_size,
                 window,
@@ -356,7 +386,7 @@ fn paint_glyphs(
             });
 
             if run.key.underline == 2 {
-                paint_double_underline(&run, origin, geometry, line_height, window);
+                paint_double_underline(run, origin, geometry, line_height, window);
             }
         }
     }
@@ -837,15 +867,39 @@ mod tests {
     fn sprite_edges_round_to_the_pixel_grid_and_never_vanish() {
         let origin = point(px(10.3), px(20.6));
         // A rect at cell-local (0, 0)–(7.2, 8.5): rounds to (10, 21)–(18, 29).
-        let snapped = snap_rect(origin, Rect { x: 0.0, y: 0.0, w: 7.2, h: 8.5 });
+        let snapped = snap_rect(
+            origin,
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 7.2,
+                h: 8.5,
+            },
+        );
         assert_eq!(snapped.origin, point(px(10.0), px(21.0)));
         assert_eq!(snapped.size, size(px(8.0), px(8.0)));
         // Two cells share the edge: cell 1's right edge and cell 2's left
         // edge both come from origin.x + 7.2 = 17.5 → 18 (round half away).
-        let next = snap_rect(point(px(10.3 + 7.2), px(20.6)), Rect { x: 0.0, y: 0.0, w: 7.2, h: 8.5 });
+        let next = snap_rect(
+            point(px(10.3 + 7.2), px(20.6)),
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 7.2,
+                h: 8.5,
+            },
+        );
         assert_eq!(next.origin.x, snapped.origin.x + snapped.size.width);
         // A hairline thinner than the rounding still paints 1 px.
-        let hair = snap_rect(origin, Rect { x: 0.0, y: 3.9, w: 7.2, h: 0.2 });
+        let hair = snap_rect(
+            origin,
+            Rect {
+                x: 0.0,
+                y: 3.9,
+                w: 7.2,
+                h: 0.2,
+            },
+        );
         assert_eq!(hair.size.height, px(1.0));
     }
 

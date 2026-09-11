@@ -20,7 +20,12 @@ fn status_result() -> Value {
             "pty_bytes_out": 302,
             "deltas_sent": 7_322,
             "snapshots_sent": 11,
+            "resyncs": 0,
         },
+        "scrollback": [
+            {"surface": 9, "scrollback_rows": 8_421, "scrollback_bytes": 34_521_088},
+            {"surface": 10, "scrollback_rows": 0, "scrollback_bytes": 0},
+        ],
     })
 }
 
@@ -87,10 +92,42 @@ fn status_prints_build_uptime_and_counts() {
     assert!(text.contains("pty in/out  1.5 MiB / 302 B\n"), "{text}");
     assert!(text.contains("deltas      7322 (2.0/s)\n"), "{text}");
     assert!(text.contains("snapshots   11\n"), "{text}");
+    assert!(text.contains("resyncs     0\n"), "{text}");
+    assert!(
+        text.contains("scrollback  8421 rows / 32.9 MiB across 2 surfaces\n"),
+        "{text}"
+    );
+    assert!(
+        text.contains("  surface 9 \"zsh\": 8421 rows, 32.9 MiB\n"),
+        "{text}"
+    );
+    assert!(
+        text.contains("  surface 10 \"editor\": 0 rows, 0 B\n"),
+        "{text}"
+    );
     assert!(
         text.contains(&format!("socket      {}\n", server.socket().display())),
         "{text}"
     );
+}
+
+#[test]
+fn status_without_a_scrollback_array_stays_quiet_about_it() {
+    // An older server, or one with no engines behind the spawner.
+    let server = FakeServer::builder()
+        .control(|req| match req["t"].as_str() {
+            Some("server.status") => {
+                let mut status = status_result();
+                status.as_object_mut().unwrap().remove("scrollback");
+                status
+            }
+            Some("workspace.get") => workspace_result(),
+            other => json!({"__err": {"code": "bad_request", "message": format!("no {other:?}")}}),
+        })
+        .start();
+    let out = server.run(&["status"]);
+    assert_eq!(code(&out), 0, "stderr: {}", stderr(&out));
+    assert!(!stdout(&out).contains("scrollback"), "{}", stdout(&out));
 }
 
 #[test]

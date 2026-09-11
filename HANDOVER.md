@@ -31,7 +31,7 @@ These are restated from the ADRs because breaking any one of them silently inval
 | I2 | Cell data never passes through JavaScript. Deltas go Server → Rust native module → GPUI paint. React carries chrome and a `surfaceId`. | ADR‑0005, Q11, Q13 |
 | I3 | Two connections per Client: Control Plane (Bun, NDJSON) and Data Plane (Rust, `0xFF"STD"` magic + `u32 len | u16 type | postcard`). | ADR‑0007, Q14–Q15, Q37 |
 | I4 | No prefix key, no modal layer, no status bar. Multiplexer features are native GUI affordances only. | ADR‑0001, Q4 |
-| I5 | gpuix is vendored at `vendor/gpuix` pinned to **0.6.0**, GPUI pinned to the Zed commit gpuix pins. Never track Zed `main`. The patch lives in `patches/0001-factory-hook.patch` and must stay ≤ ~40 lines. | ADR‑0006, Q12, Q36a |
+| I5 | gpuix is vendored at `vendor/gpuix` pinned to **0.7.0**, GPUI pinned to the Zed commit gpuix pins. Never track Zed `main`. Patches live in `patches/*.patch` and are applied by `just vendor-patch` (`0001-factory-hook` stays ≤ ~40 lines; `0002` mouse lease; `0003` window placement). | ADR‑0006, Q12, Q36a |
 | I6 | `alacritty_terminal` (crates.io 0.26.x) is confined to `crates/st-core/src/vt/alacritty.rs` behind the `VtEngine` trait. Its types never appear on the wire. | ADR‑0004, Q8, Q48 |
 | I7 | UI state that must survive a Client relaunch (tabs, sessions, active tab, scroll offset, selection) lives in the Server. Client‑only state: window geometry, focus, palette text. | Q17, Q43 |
 | I8 | `st-proto` depends only on `serde` + `postcard` (+ `ts-rs` dev‑only). Any wire change after M1‑02 needs a protocol version bump and one owner. | Q32, 07 §Parallelization |

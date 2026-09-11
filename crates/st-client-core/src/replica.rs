@@ -78,6 +78,21 @@ impl ReplicaConfig {
     }
 }
 
+/// Lifetime protocol counters for one Replica, surfaced as `stats.gaps`,
+/// `stats.resyncs` and `stats.snapshots` (handover A.2 item 5).
+///
+/// These are observability only: nothing in the state machine reads them.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ReplicaCounters {
+    /// Deltas discarded because `since_seq` did not build on this Replica
+    /// (a Gap).
+    pub gaps: u64,
+    /// Snapshot requests sent while still attached (a Resync after a Gap).
+    pub resyncs: u64,
+    /// Snapshots applied, including the first one after Attach.
+    pub snapshots: u64,
+}
+
 /// A [`Delta`] did not build on the state this Replica holds (grilling Q38).
 ///
 /// The delta was **not** applied and must not be buffered: the caller
@@ -129,6 +144,8 @@ pub struct Replica {
     exited: Option<ExitStatus>,
     /// Local cache size limit.
     config: ReplicaConfig,
+    /// Protocol counters; never consulted by the state machine itself.
+    counters: ReplicaCounters,
 }
 
 impl Replica {
@@ -157,6 +174,7 @@ impl Replica {
             seq: Seq::ZERO,
             exited: None,
             config,
+            counters: ReplicaCounters::default(),
         }
     }
 
@@ -232,6 +250,35 @@ impl Replica {
     #[must_use]
     pub const fn exited(&self) -> Option<ExitStatus> {
         self.exited
+    }
+
+    /// The protocol counters (`gaps`, `resyncs`, `snapshots`).
+    #[inline]
+    #[must_use]
+    pub const fn counters(&self) -> ReplicaCounters {
+        self.counters
+    }
+
+    /// An estimate of the heap held by the Replica's rows and style table, in
+    /// bytes (B.2 step 2; surfaced as `stats.replicaBytes`).
+    ///
+    /// `(visible + cached history) rows × cols × size_of::<PackedCell>()` plus
+    /// one `size_of::<Style>()` per style. It deliberately ignores allocator
+    /// overhead, the per-row `extras` side table and the style table's index
+    /// map, so it is a stable lower bound comparable between samples rather
+    /// than an exact allocator reading.
+    #[must_use]
+    pub fn approx_bytes(&self) -> usize {
+        let rows = self.visible.len() + self.history.len();
+        rows * usize::from(self.cols) * std::mem::size_of::<PackedCell>()
+            + std::mem::size_of_val(self.styles.as_slice())
+    }
+
+    /// Records that the Data Plane asked for a fresh Snapshot while this
+    /// Replica was still attached (a Resync after a Gap). The Data Plane calls
+    /// this just before it re-sends `Attach { want_snapshot: true }`.
+    pub fn note_resync(&mut self) {
+        self.counters.resyncs += 1;
     }
 
     /// The Server's trim point: the oldest line it still retains.
@@ -356,6 +403,7 @@ impl Replica {
     /// rows (only `history_base`/`history_len`), and it is refetched lazily as
     /// the user scrolls.
     pub fn apply_snapshot(&mut self, snap: &Snapshot) {
+        self.counters.snapshots += 1;
         self.surface_id = snap.surface_id;
         self.cols = snap.cols;
         self.rows = snap.rows;
@@ -394,7 +442,8 @@ impl Replica {
     /// Applies a [`Delta`] (§4.3, §6), in the order given by
     /// `04-client-native.md` §4:
     ///
-    /// 1. gap check on [`Delta::since_seq`] — on failure nothing changes;
+    /// 1. gap check on [`Delta::since_seq`] — on failure the grid, styles and
+    ///    `seq` are untouched, but the [`ReplicaCounters::gaps`] counter moves;
     /// 2. style-table additions, before any row that references them;
     /// 3. resize, if any (every row then arrives dirty; there is no reflow);
     /// 4. rows that scrolled off the top move into the history cache, *before*
@@ -403,6 +452,7 @@ impl Replica {
     /// 6. cursor, modes, title and `seq`.
     pub fn apply_delta(&mut self, delta: &Delta) -> Result<(), Gap> {
         if delta.since_seq != self.seq {
+            self.counters.gaps += 1;
             return Err(Gap {
                 surface_id: delta.surface_id,
                 have: self.seq,
@@ -787,6 +837,33 @@ mod tests {
     }
 
     #[test]
+    fn the_counters_track_snapshots_gaps_and_resyncs() {
+        let mut replica = Replica::new(SurfaceId(7));
+        assert_eq!(replica.counters(), ReplicaCounters::default());
+
+        replica.apply_snapshot(&snapshot(4, 1, &["a"]));
+        assert_eq!(replica.counters().snapshots, 1);
+        assert_eq!(replica.counters().gaps, 0);
+
+        // A delta that does not build on seq 1 is a Gap.
+        assert!(replica.apply_delta(&delta(3, 2)).is_err());
+        assert_eq!(replica.counters().gaps, 1);
+        // The Gap left the grid untouched.
+        assert_eq!(grid(&replica), vec!["a"]);
+        assert_eq!(replica.seq(), Seq(1));
+
+        replica.note_resync();
+        assert_eq!(replica.counters().resyncs, 1);
+
+        // The healing Snapshot counts too.
+        let mut healed = snapshot(4, 1, &["b"]);
+        healed.seq = Seq(3);
+        replica.apply_snapshot(&healed);
+        assert_eq!(replica.counters().snapshots, 2);
+        assert_eq!(replica.seq(), Seq(3));
+    }
+
+    #[test]
     fn scrolled_off_rows_land_in_the_history_cache() {
         let mut replica = Replica::new(SurfaceId(7));
         replica.apply_snapshot(&snapshot(8, 3, &["l0", "l1", "l2"]));
@@ -959,6 +1036,69 @@ mod tests {
 
         replica.shrink_history_to(4);
         assert_eq!(replica.cached_history_range(), 36..40);
+    }
+
+    #[test]
+    fn shrinking_a_ten_thousand_row_cache_frees_the_rows_and_keeps_the_screen() {
+        let mut replica = Replica::new(SurfaceId(7));
+        let mut snap = snapshot(20, 3, &["v0", "v1", "v2"]);
+        snap.history_len = 10_000;
+        replica.apply_snapshot(&snap);
+
+        let rows: Vec<Row> = (0..10_000u32).map(|i| row_of(&format!("h{i}"))).collect();
+        replica.apply_history_page(&History {
+            surface_id: SurfaceId(7),
+            from_line: AbsLine(0),
+            history_base: AbsLine(0),
+            rows,
+        });
+        assert_eq!(replica.cached_history_len(), 10_000);
+        let cell = std::mem::size_of::<PackedCell>();
+        let style_bytes = std::mem::size_of_val(replica.styles().as_slice());
+        assert_eq!(
+            replica.approx_bytes(),
+            (3 + 10_000) * 20 * cell + style_bytes
+        );
+
+        replica.shrink_history_to(1000);
+
+        // The rows are gone, the visible grid is untouched, and the rest is
+        // still addressable as "not cached" so it can be refetched later.
+        assert_eq!(replica.cached_history_len(), 1_000);
+        assert_eq!(replica.cached_history_range(), 9_000..10_000);
+        assert_eq!(grid(&replica), vec!["v0", "v1", "v2"]);
+        assert_eq!(replica.line(AbsLine(8_999)), None);
+        assert_eq!(row_text(replica.line(AbsLine(9_999)).unwrap(), 20), "h9999");
+        assert_eq!(
+            replica.approx_bytes(),
+            (3 + 1_000) * 20 * cell + style_bytes
+        );
+        assert!(
+            replica.approx_bytes() < (3 + 10_000) * 20 * cell + style_bytes,
+            "approx_bytes must drop with the cache"
+        );
+    }
+
+    #[test]
+    fn approx_bytes_counts_rows_and_styles() {
+        // An empty Replica still carries `Style::DEFAULT`.
+        let empty = Replica::new(SurfaceId(7));
+        assert_eq!(empty.approx_bytes(), std::mem::size_of::<Style>());
+
+        let mut replica = Replica::new(SurfaceId(7));
+        let red = Style {
+            fg: Color::Indexed(1),
+            ..Style::DEFAULT
+        };
+        let mut snap = snapshot(10, 2, &["a", "b"]);
+        snap.styles = vec![Style::DEFAULT, red];
+        replica.apply_snapshot(&snap);
+
+        let row = 10 * std::mem::size_of::<PackedCell>();
+        assert_eq!(
+            replica.approx_bytes(),
+            2 * row + 2 * std::mem::size_of::<Style>()
+        );
     }
 
     #[test]

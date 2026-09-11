@@ -14,6 +14,7 @@ import {
   type Workspace,
   type WorkspaceSnapshot,
 } from '@superterminal/protocol-ts';
+import { sameWindowPlacement } from './client-state.js';
 import { clampRatio, clampSidebarWidth } from './layout.js';
 import { clampFontZoom } from './zoom.js';
 import type {
@@ -426,9 +427,30 @@ export function applyUiAction(state: WorkspaceState, action: UiAction): Workspac
       };
     }
 
-    case 'window.resize':
-      if (ui.window.width === action.width && ui.window.height === action.height) return state;
-      return withUi(state, { window: { width: action.width, height: action.height } });
+    case 'window.resize': {
+      // The size comes from `getWindowSize` (the paintable viewport); the
+      // placement is sampled separately, so keep it while the size changes.
+      const window = { ...ui.window, width: action.width, height: action.height };
+      if (sameWindowPlacement(ui.window, window)) return state;
+      return withUi(state, { window });
+    }
+
+    case 'ui/window-placed': {
+      // The sampled placement always carries a fresh size, but `ui.window`'s
+      // size is the viewport (`getWindowSize`), which is what the layout
+      // reads. Take the position and display only; a move never fights a
+      // resize. `readWindowPlacement` never persists fullscreen.
+      const current = ui.window;
+      const window = { ...current };
+      if (action.placement.x !== undefined && action.placement.y !== undefined) {
+        window.x = action.placement.x;
+        window.y = action.placement.y;
+      }
+      window.maximized = action.placement.maximized ?? false;
+      if (action.placement.display !== undefined) window.display = action.placement.display;
+      if (sameWindowPlacement(current, window)) return state;
+      return withUi(state, { window });
+    }
 
     case 'toast.push':
       return withUi(state, {

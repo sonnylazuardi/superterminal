@@ -454,6 +454,12 @@ Interning: the server keeps one `HashMap<Style, u16>` per Surface. Index 0 is al
 5. **Flow control.** The server allows at most **4 unacknowledged** Deltas in flight per (client, Surface). `Ack{seq}` from the client (sent after applying, at most once per rendered frame) reopens the window. While the window is closed the server keeps merging into a single pending Delta — nothing is dropped, memory is bounded by one grid — and sends it on the next `Ack`. A `Snapshot` counts as one in-flight message. Ack is per Surface so a busy `cat` in one tab never starves the cursor blink in another.
 6. **Alt-screen.** Switching to/from alt screen sets `ALT_SCREEN` and marks all rows dirty; `scrollback_appended` is always 0 while `ALT_SCREEN` is set (alt screen has no scrollback).
 
+**Addendum (ADR 0011, 2026-09-11) — per-subscription sequencing and styles.** The wire encoding is unchanged; only what `Delta.since_seq` and `Delta.new_styles` mean is pinned down, because a Surface can have more than one subscriber at a time:
+
+- `since_seq` is the emitting subscription's own `last_sent_seq` *before* the flush that emits the Delta — never a global `seq − 1`. A subscription that skipped flushes (idle, window-blocked or coalesced) therefore gets a Delta that chains on the last frame *it* received, and never a false Gap. A standalone sequenced event (`SurfaceExited`) is sent to every attached Client, so it advances every subscription's cursor too.
+- `new_styles` is the slice of the Surface's Style Table from that subscription's own `styles_sent` cursor to the table's current length; each subscription's cursor advances independently. A `Snapshot` carries the whole table but **does not reset it** — one subscriber's Snapshot must not invalidate the indices another subscriber holds. The table resets only on overflow past `STYLE_TABLE_CAP` (Q45): the generation is bumped and every subscription is forced a Snapshot. A subscription whose cursor belongs to an older generation is treated as needing a Snapshot.
+- A repeated `Attach` from a Client already attached to the Surface is a **Resync**, not an error: the Server keeps the attachment, applies the new `mode`, and answers with a Snapshot on the next flush. `Attach.want_snapshot`/`known_seq` stay advisory; the first frame after an Attach (or a repeated Attach) is always a Snapshot.
+
 ---
 
 ## 7. Snapshot contents

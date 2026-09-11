@@ -58,6 +58,14 @@ _Avoid_: full sync, dump, frame
 A sequence‑numbered description of what changed in a Surface since the previous Delta (dirty rows, cursor, modes, appended scrollback).
 _Avoid_: diff, patch, update, damage (Server‑internal term for what the terminal engine reports)
 
+**Gap**:
+A Delta that does not build on the frame a Client last received. The Client discards it and asks for a Resync; nothing on screen changes until the Snapshot arrives.
+_Avoid_: desync, out of order, sequence error
+
+**Resync**:
+A Client asking for a fresh Snapshot of a Surface it is already attached to, after a Gap. The Server answers with a Snapshot; the attachment is unchanged.
+_Avoid_: re-attach, refresh, reload
+
 **History**:
 The lines that have scrolled off the top of a Surface's screen. Fetched by a Client on demand, not pushed.
 _Avoid_: scrollback (acceptable in UI copy only), backlog
@@ -77,8 +85,12 @@ What the user has declared they want, written by hand in the configuration file 
 _Avoid_: settings, preferences (both blur the line with Client State)
 
 **Client State**:
-What one Client on one machine remembers from its last run without the user declaring it: the last window size, the Tab Layout (sidebar or strip) and the sidebar width. Client State wins over Config when both say something about the same thing; Config only seeds the first run. It is not part of the Workspace and is never sent to the Server.
+What one Client on one machine remembers from its last run without the user declaring it: the Window Placement, the Tab Layout (sidebar or strip), the sidebar width and the font zoom. Client State wins over Config when both say something about the same thing; Config only seeds the first run. It is not part of the Workspace and is never sent to the Server.
 _Avoid_: settings, preferences, window state, ui state, cache
+
+**Window Placement**:
+Where and how big a Client's window was when it was last closed: its size, its position, the display it was on and whether it was maximised. Remembered as Client State; a display that is no longer there means the window opens where a first run would.
+_Avoid_: window bounds, geometry, window state (both blur the line with Client State)
 
 **Control Plane**:
 The human‑readable channel between Client and Server for managing the Workspace (create Tab, rename Session, …).

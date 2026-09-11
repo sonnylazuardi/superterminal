@@ -29,6 +29,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 
+use serde::Serialize;
 use st_proto::control::{ErrorBody, ErrorCode, KillSignal};
 use st_proto::SurfaceId;
 
@@ -81,6 +82,23 @@ pub struct SpawnedSurface {
     pub pid: Option<u32>,
     /// Initial title; `None` means "use the program name".
     pub title: Option<String>,
+}
+
+/// One Surface's scrollback footprint, as `server.status` reports it.
+///
+/// The Server's memory is dominated by retained History (handover B.2 step 7:
+/// "`st status` prints per-Surface scrollback rows / bytes"), and the Workspace
+/// actor owns no engine, so the spawner is the only component that can measure
+/// it. The numbers are approximate on purpose: the engine's rows are not the
+/// 8-byte wire [`st_proto::PackedCell`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct ScrollbackUsage {
+    /// The Surface the numbers belong to.
+    pub surface: SurfaceId,
+    /// Retained History rows.
+    pub scrollback_rows: u64,
+    /// Approximate bytes those rows occupy.
+    pub scrollback_bytes: u64,
 }
 
 /// Why a spawn or a kill failed.
@@ -139,6 +157,16 @@ pub trait SurfaceSpawner: Send + Sync + 'static {
     /// nothing, which is correct for spawners that hold no state.
     fn destroy(&self, id: SurfaceId) {
         let _ = id;
+    }
+
+    /// The scrollback footprint of every Surface the spawner still holds.
+    ///
+    /// `server.status` splices this into its result so `st status` can show
+    /// where the Server's memory goes (handover B.2 step 7). The default
+    /// implementation reports nothing, which is correct for spawners with no
+    /// engines ([`NullSpawner`] in tests, the pre-data-plane placeholder).
+    fn scrollback_usage(&self) -> Vec<ScrollbackUsage> {
+        Vec::new()
     }
 }
 
@@ -226,5 +254,22 @@ mod tests {
     #[test]
     fn program_name_is_the_file_name() {
         assert_eq!(spec().program_name(), "zsh");
+    }
+
+    #[test]
+    fn scrollback_usage_serializes_with_the_names_st_status_reads() {
+        let usage = ScrollbackUsage {
+            surface: SurfaceId(9),
+            scrollback_rows: 12,
+            scrollback_bytes: 2_304,
+        };
+        assert_eq!(
+            serde_json::to_value(usage).unwrap(),
+            serde_json::json!({
+                "surface": 9,
+                "scrollback_rows": 12,
+                "scrollback_bytes": 2_304,
+            })
+        );
     }
 }

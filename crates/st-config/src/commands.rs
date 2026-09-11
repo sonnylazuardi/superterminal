@@ -30,6 +30,9 @@ pub const COMMAND_IDS: &[&str] = &[
     "tab.next",
     "tab.prev",
     "view.toggleVerticalTabs",
+    "view.zoomIn",
+    "view.zoomOut",
+    "view.zoomReset",
 ];
 
 /// Modifier tokens accepted in a shortcut string.
@@ -79,6 +82,7 @@ mod tests {
         sorted.sort_unstable();
         assert_eq!(sorted, COMMAND_IDS);
         assert!(is_known_command("tab.new"));
+        assert!(is_known_command("view.zoomIn"));
         assert!(!is_known_command("tab.explode"));
     }
 

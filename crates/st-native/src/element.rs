@@ -40,7 +40,7 @@ use st_client_core::mouse::{
     WheelAction,
 };
 use st_client_core::selection::{hit_edge, hit_test, AbsPoint};
-use st_client_core::{DataPlaneEvent, DataPlaneHandle, Selection, SelectionMode};
+use st_client_core::{DataPlaneEvent, DataPlaneHandle, ReplicaCounters, Selection, SelectionMode};
 use st_proto::{AbsLine, Modes, SurfaceId};
 
 use crate::conn::SharedDataPlane;
@@ -50,7 +50,7 @@ use crate::mouse::{hit_zone, selection_mode_for, HitZone, MotionThrottle, WheelA
 use crate::paint::{paint_frame, RunKey, BLINK_MS};
 use crate::props::{Command, GridProps, ScrollbarMode, SUPPORTED_EVENTS, SUPPORTED_PROPS};
 use crate::registry::{GridSnapshot, StatsSnapshot};
-use crate::runs::RunCache;
+use crate::runs::{RowLayout, RunCache};
 use crate::stats::FrameStats;
 use crate::viewstate::{self, Trigger, ViewStateDebouncer};
 use crate::wake::Waker;
@@ -67,6 +67,10 @@ pub const KEY_CONTEXT: &str = "TerminalGrid";
 /// dozens of lines in a frame and xterm-style reporting has one press per
 /// line; past this the program cannot tell the difference anyway.
 const MAX_WHEEL_REPORTS: usize = 10;
+
+/// History rows a Replica keeps when its `<terminal-grid>` unmounts
+/// (`docs/plan/04-client-native.md:108`).
+const UNMOUNT_HISTORY_KEEP: usize = 1000;
 
 /// gpuix's event callback. Named structurally so we never have to name the
 /// `pub(crate)` alias inside `gpuix-native`.
@@ -132,6 +136,8 @@ pub struct GridState {
     pub bounds: Option<Bounds<Pixels>>,
     /// Shaped-line cache (04 §6 step 3).
     pub run_cache: RunCache<RunKey, gpui::ShapedLine>,
+    /// Per-viewport-row layout buffers, refilled every frame (B.2 step 5).
+    pub row_layouts: Vec<RowLayout>,
     /// Frame counters.
     pub stats: FrameStats,
 
@@ -216,6 +222,7 @@ impl Default for GridState {
             ),
             bounds: None,
             run_cache: RunCache::new(256),
+            row_layouts: Vec::new(),
             stats: FrameStats::default(),
             scroll_offset: 0,
             selection: None,
@@ -433,21 +440,39 @@ impl GridState {
         }
 
         if self.attached != Some(surface) {
-            if let Some(previous) = self.attached.take() {
-                if let Some(handle) = &self.handle {
-                    let _ = handle.detach(previous);
-                }
-            }
-            let Some(handle) = &self.handle else {
-                return;
-            };
-            if handle.attach(surface, self.props.attach_mode).is_ok() {
+            // The Data Plane's attachment set survives a `Disconnected`:
+            // `reattach_all` re-sends one `Attach` per entry on the next socket,
+            // so when the local flag was cleared by a disconnect and the core
+            // still holds the Surface, adopting is enough — a second `Attach`
+            // here would be the R4 duplicate.
+            //
+            // A *different* Surface on a reused element is not that case: the
+            // code below detaches the old Surface and `Attach`es the new one,
+            // so the Server answers with a fresh Snapshot (ADR 0011 Resync) and
+            // the stale view state (scroll, selection, size) is reset.
+            let core_attached = self
+                .handle
+                .as_ref()
+                .is_some_and(|handle| handle.is_attached(surface));
+            if core_attached && self.attached.is_none() {
                 self.attached = Some(surface);
-                self.selection = None;
-                self.scroll_offset = 0;
-                self.last_sent_size = None;
-                self.pending_history = None;
-                self.debouncer.reset();
+            } else {
+                if let Some(previous) = self.attached.take() {
+                    if let Some(handle) = &self.handle {
+                        let _ = handle.detach(previous);
+                    }
+                }
+                let Some(handle) = &self.handle else {
+                    return;
+                };
+                if handle.attach(surface, self.props.attach_mode).is_ok() {
+                    self.attached = Some(surface);
+                    self.selection = None;
+                    self.scroll_offset = 0;
+                    self.last_sent_size = None;
+                    self.pending_history = None;
+                    self.debouncer.reset();
+                }
             }
         }
     }
@@ -463,6 +488,27 @@ impl GridState {
         self.plane = None;
         self.handle = None;
         self.connected_path = None;
+    }
+
+    /// Releases the Replica's memory when the element unmounts (B.2 step 3).
+    ///
+    /// Most unmounts are a hidden Tab: the Replica is kept (the screen is
+    /// still readable on the way back) but its scrollback is cut to
+    /// [`UNMOUNT_HISTORY_KEEP`] rows, as `04-client-native.md` budgets. When
+    /// the Surface has already Exited and its Tab is going away, the Replica
+    /// can never change again, so it is forgotten outright.
+    fn release_replica(&self) {
+        let (Some(handle), Some(surface)) = (&self.handle, self.surface()) else {
+            return;
+        };
+        let exited = handle
+            .with_replica(surface, |replica| replica.exited().is_some())
+            .unwrap_or(false);
+        if exited {
+            handle.forget(surface);
+        } else {
+            handle.shrink_history_to(surface, UNMOUNT_HISTORY_KEEP);
+        }
     }
 
     // -------------------------------------------------------------- commands
@@ -752,6 +798,25 @@ impl GridState {
     /// Publishes the read-back snapshot for `st_read_prop` (04 §3).
     fn publish(&self) {
         let (hits, misses) = self.run_cache.counters();
+        let counters = self
+            .handle
+            .as_ref()
+            .zip(self.surface())
+            .map_or_else(ReplicaCounters::default, |(handle, surface)| {
+                handle.counters(surface)
+            });
+        let replica_bytes = self
+            .handle
+            .as_ref()
+            .zip(self.surface())
+            .and_then(|(handle, surface)| {
+                handle.with_replica(surface, |replica| replica.approx_bytes())
+            })
+            .unwrap_or(0) as u64;
+        let forgotten = self
+            .handle
+            .as_ref()
+            .map_or(0, DataPlaneHandle::forgotten_count);
         crate::registry::publish(GridSnapshot {
             element_id: self.id,
             surface: self.surface(),
@@ -773,7 +838,15 @@ impl GridState {
                 .is_some_and(|plane| plane.is_connected()),
             attached: self.attached.is_some(),
             modes: self.modes,
-            stats: StatsSnapshot::of(&self.stats, hits, misses, self.run_cache.len()),
+            stats: StatsSnapshot::of(
+                &self.stats,
+                hits,
+                misses,
+                self.run_cache.len(),
+                counters,
+                replica_bytes,
+                forgotten,
+            ),
         });
     }
 }
@@ -944,10 +1017,12 @@ impl CustomElement for TerminalGridElement {
     fn destroy(&mut self) {
         let mut state = self.state.borrow_mut();
         let id = state.id;
+        state.release_replica();
         state.teardown();
         state.wake_task = None;
         state.blink_task = None;
         state.run_cache.clear();
+        state.row_layouts = Vec::new();
         crate::registry::retire(id);
     }
 }
@@ -1363,6 +1438,124 @@ where
 mod tests {
     use super::*;
     use serde_json::json;
+    use st_proto::{Cursor, ExitStatus, History, Row, Seq, Snapshot, Style, ViewState};
+
+    /// A socketless Data Plane handle tests can seed Replicas through.
+    fn handle_for_tests() -> DataPlaneHandle {
+        let shared = st_client_core::Shared::new(
+            st_client_core::DataPlaneOptions::default(),
+            Box::new(|| {}),
+        );
+        DataPlaneHandle::from_shared(Arc::clone(&shared))
+    }
+
+    /// An element bound to `surface` on `handle`, with no socket behind it.
+    fn element_with(handle: &DataPlaneHandle, surface: SurfaceId) -> TerminalGridElement {
+        let element = TerminalGridElement::new(u64::from(surface.0) + 100);
+        {
+            let mut state = element.state().borrow_mut();
+            state.props.surface_id = Some(surface.0);
+            state.handle = Some(handle.clone());
+        }
+        element
+    }
+
+    /// Seeds a Replica with `history` cached rows so `destroy` has memory to
+    /// release.
+    fn seed_replica(handle: &DataPlaneHandle, surface: SurfaceId, history: usize, exited: bool) {
+        handle.with_replica_mut(surface, |replica| {
+            replica.apply_snapshot(&Snapshot {
+                surface_id: surface,
+                seq: Seq::FIRST,
+                cols: 8,
+                rows: 1,
+                styles: vec![Style::DEFAULT],
+                grid: vec![Row::new()],
+                cursor: Cursor::default(),
+                modes: Modes::empty(),
+                title: "sh".into(),
+                history_base: AbsLine::ZERO,
+                history_len: history as u64,
+                view_state: ViewState::default(),
+                exited: exited.then_some(ExitStatus {
+                    code: Some(0),
+                    signal: None,
+                }),
+            });
+            replica.apply_history_page(&History {
+                surface_id: surface,
+                from_line: AbsLine::ZERO,
+                history_base: AbsLine::ZERO,
+                rows: (0..history).map(|_| Row::new()).collect(),
+            });
+        });
+    }
+
+    fn stats_of(surface: SurfaceId) -> serde_json::Value {
+        crate::registry::snapshot_for_surface(surface)
+            .expect("the element published a snapshot")
+            .read("stats")
+            .expect("stats is a readable prop")
+    }
+
+    #[test]
+    fn destroy_shrinks_a_live_replicas_history_to_the_unmount_budget() {
+        let handle = handle_for_tests();
+        let surface = SurfaceId(7101);
+        seed_replica(&handle, surface, 5_000, false);
+        let mut element = element_with(&handle, surface);
+
+        element.state().borrow().publish();
+        let before = stats_of(surface)["replicaBytes"].as_u64().unwrap();
+        assert!(before > 0, "a 5 000-row Replica weighs something");
+
+        element.destroy();
+
+        // The screen is kept (a Tab may come back), the scrollback is cut to
+        // the unmount budget and the bytes drop with it (B.2 step 3).
+        let after = handle
+            .with_replica(surface, |replica| replica.approx_bytes())
+            .expect("a live Replica is kept");
+        assert!((after as u64) < before, "{after} !< {before}");
+        assert_eq!(
+            handle.with_replica(surface, |replica| replica.cached_history_len()),
+            Some(UNMOUNT_HISTORY_KEEP)
+        );
+        assert_eq!(
+            handle.forgotten_count(),
+            0,
+            "a live Surface is not forgotten"
+        );
+        assert!(crate::registry::snapshot_for_surface(surface).is_none());
+    }
+
+    #[test]
+    fn destroy_forgets_an_exited_replica_and_the_stats_say_so() {
+        let handle = handle_for_tests();
+        let surface = SurfaceId(7102);
+        seed_replica(&handle, surface, 5_000, true);
+        let mut element = element_with(&handle, surface);
+
+        element.state().borrow().publish();
+        let stats = stats_of(surface);
+        assert!(stats["replicaBytes"].as_u64().unwrap() > 0);
+        assert_eq!(stats["forgotten"], 0);
+
+        element.destroy();
+
+        // An Exited Surface can never change again; closing its Tab releases
+        // the Replica outright (B.2 step 3).
+        assert!(
+            handle.with_replica(surface, |_| ()).is_none(),
+            "the Exited Replica should be forgotten"
+        );
+        assert_eq!(handle.forgotten_count(), 1);
+
+        // Every element on the same connection reports the release.
+        let other = element_with(&handle, SurfaceId(7103));
+        other.state().borrow().publish();
+        assert_eq!(stats_of(SurfaceId(7103))["forgotten"], 1);
+    }
 
     #[test]
     fn the_factory_answers_to_the_documented_element_type() {
@@ -1467,6 +1660,77 @@ mod tests {
         assert_eq!(state.surface(), None);
     }
 
+    #[test]
+    fn a_reconnect_does_not_attach_what_the_core_still_holds() {
+        use st_proto::AttachMode;
+
+        // The Data Plane keeps the attachment across a disconnect and
+        // `reattach_all` restores it; the element must not send a second
+        // Attach when its local flag was cleared by a Disconnected (R4).
+        let shared = st_client_core::Shared::new(
+            st_client_core::DataPlaneOptions::default(),
+            Box::new(|| {}),
+        );
+        let handle = DataPlaneHandle::from_shared(Arc::clone(&shared));
+        // No socket: the send fails, but the attachment is remembered.
+        assert!(handle.attach(SurfaceId(7), AttachMode::Active).is_err());
+        assert!(handle.is_attached(SurfaceId(7)));
+
+        let mut state = GridState::default();
+        state.props.surface_id = Some(7);
+        state.props.socket_path = Some("/tmp/st-element-reattach-test".into());
+        state.connected_path = Some("/tmp/st-element-reattach-test".into());
+        state.handle = Some(handle);
+        state.attached = None; // what a Disconnected leaves behind
+
+        state.ensure_connection();
+
+        // The flag came back from the core instead of a duplicate Attach:
+        // on this socketless state an `attach` fails, so the old code would
+        // have left the flag clear.
+        assert_eq!(state.attached, Some(SurfaceId(7)));
+
+        // A Surface the core does not hold still takes the Attach path.
+        state.props.surface_id = Some(8);
+        state.ensure_connection();
+        assert_eq!(state.attached, None);
+        assert!(!state.handle.as_ref().unwrap().is_attached(SurfaceId(7)));
+    }
+
+    #[test]
+    fn a_surface_switch_on_a_reused_element_does_not_adopt_the_core_attachment() {
+        use st_proto::AttachMode;
+
+        // An element whose `surfaceId` changed must detach the old Surface and
+        // Attach the new one even when the native core still holds the new
+        // Surface: that Attach is a Resync and is answered with a fresh
+        // Snapshot, so the pane never paints a stale Replica (ADR 0011). The
+        // R4 adopt shortcut is reserved for a local flag cleared by a
+        // Disconnected (`attached == None`).
+        let shared = st_client_core::Shared::new(
+            st_client_core::DataPlaneOptions::default(),
+            Box::new(|| {}),
+        );
+        let handle = DataPlaneHandle::from_shared(Arc::clone(&shared));
+        // No socket: the send fails, but the attachment is remembered.
+        assert!(handle.attach(SurfaceId(7), AttachMode::Active).is_err());
+
+        let mut state = GridState::default();
+        state.props.surface_id = Some(7);
+        state.props.socket_path = Some("/tmp/st-element-surface-switch-test".into());
+        state.connected_path = Some("/tmp/st-element-surface-switch-test".into());
+        state.handle = Some(handle);
+        state.attached = Some(SurfaceId(8)); // this element was showing 8
+
+        state.ensure_connection();
+
+        // The Attach path ran instead of adopting the core's entry: on this
+        // socketless handle the send fails, so the old code's adopt shortcut
+        // (which set `attached = Some(7)` without sending anything) shows up
+        // here as a difference.
+        assert_eq!(state.attached, None);
+    }
+
     fn unpadded_grid() -> GridState {
         GridState {
             geometry: GridGeometry::fit(
@@ -1503,7 +1767,11 @@ mod tests {
         let press_at = |x: f32, y: f32| {
             let cell = state.report_cell(x, y);
             encode_mouse(
-                &MouseEvent::press(st_client_core::mouse::MouseButton::Left, cell, Mods::empty()),
+                &MouseEvent::press(
+                    st_client_core::mouse::MouseButton::Left,
+                    cell,
+                    Mods::empty(),
+                ),
                 protocol,
                 encoding,
             )

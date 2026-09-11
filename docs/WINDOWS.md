@@ -113,8 +113,8 @@ admin). The full chain, all on Windows:
                          rem superterminal-native.win32-x64-msvc.node,
                          rem superterminal.ico, Product.wxs
    candle.exe Product.wxs -o obj\
-   light.exe obj\Product.wixobj -o Superterminal-0.1.7.msi
-   msiexec /i Superterminal-0.1.7.msi /passive
+   light.exe obj\Product.wixobj -o Superterminal-0.1.8.msi
+   msiexec /i Superterminal-0.1.8.msi /passive
    ```
    `Product.wxs` registers `superterminal.ico` as the Start Menu shortcut
    icon and the Apps & features (`ARPPRODUCTICON`) entry.
@@ -129,11 +129,19 @@ admin). The full chain, all on Windows:
   Down / Close Pane / Close Tab); shortcuts on Windows are Ctrl+Shift+D,
   Alt+Shift+D, Alt+Shift+W, Alt+] / Alt+[.
 
-- The client remembers its last window size and tab layout (Client State,
+- The client remembers its Window Placement and tab layout (Client State,
   ADR 0008) in `%LOCALAPPDATA%\superterminal\client.json`; delete the file
   or set `[window] remember = false` in `config.toml` to start from config.
-  Window position and the maximised state are not remembered: gpuix does not
-  expose them.
+  Size, position, the display and the maximised state all restore on reopen:
+  the display is found by uuid first and by its bounds second, and a monitor
+  that is no longer connected degrades to a plain centred window. Fullscreen
+  is never stored; the next run opens maximised instead. This needs the
+  `getWindowPlacement` native API added by `patches/0003-window-placement.patch`.
+
+- A window background of `auto` or `blurred` resolves to **opaque** on
+  Windows (the Win32 blur path is unreliable and a transparent GPUI quad
+  punches through to the desktop); only an explicit
+  `[window] background = "transparent"` stays transparent.
 
 - The data plane reconnects and re-attaches like the Unix transport; the
   framing is transport-agnostic (`02-protocol.md` §1.1).

@@ -123,6 +123,11 @@ pub struct Surface {
     /// [`Surface::take_update`] path.
     pending: Coalesced,
     needs_snapshot: bool,
+    /// Style-table generation and cursor for the single-consumer
+    /// [`Surface::take_update`] path; the fan-out path keeps one per
+    /// subscription (ADR 0011).
+    own_styles_generation: u32,
+    own_styles_sent: u16,
 
     last_cursor: Cursor,
     last_modes: Modes,
@@ -193,6 +198,8 @@ impl Surface {
             view_state: ViewState::default(),
             pending: Coalesced::new(rows),
             needs_snapshot: false,
+            own_styles_generation: 0,
+            own_styles_sent: 0,
             last_cursor: cursor,
             last_modes: modes,
             last_title: title,
@@ -361,6 +368,9 @@ impl Surface {
     pub fn set_exited(&mut self, status: ExitStatus) -> SurfaceExited {
         self.status = SurfaceStatus::Exited(status.clone());
         self.seq = self.seq.next();
+        // `pump::reap` sends the event to every attached Client, so every
+        // subscription's `since` cursor advances with it (ADR 0011).
+        self.publisher.note_event_sent(self.seq);
         SurfaceExited {
             surface_id: self.id,
             seq: self.seq,
@@ -388,7 +398,28 @@ impl Surface {
     /// `true` when something has changed since the last emitted frame.
     #[must_use]
     pub fn has_pending(&self) -> bool {
-        self.needs_snapshot || !self.pending.is_empty()
+        self.needs_snapshot
+            || self.own_styles_generation != self.styles.generation()
+            || !self.pending.is_empty()
+    }
+
+    /// `true` when the single-consumer cursor cannot describe the table any
+    /// more (it was reset by overflow or [`Surface::reset`]).
+    fn own_styles_stale(&self) -> bool {
+        self.own_styles_generation != self.styles.generation()
+    }
+
+    /// Points the single-consumer cursor at the current end of the table.
+    fn note_own_styles(&mut self) {
+        self.own_styles_generation = self.styles.generation();
+        self.own_styles_sent = u16::try_from(self.styles.len()).unwrap_or(u16::MAX);
+    }
+
+    /// Points `client`'s per-subscription cursor at the current end of the
+    /// table. Called after its frame is built (ADR 0011).
+    fn note_client_styles(&mut self, client: ClientId) {
+        self.publisher
+            .record_styles_sent(client, self.styles.generation(), self.styles.len());
     }
 
     /// Absolute id of the oldest retained history line.
@@ -412,6 +443,14 @@ impl Surface {
     /// default style, so nothing can dangle.
     pub fn history(&mut self, from: AbsLine, count: u32) -> History {
         let rows = self.engine.history_lines(from, count, &mut self.styles);
+        if self.styles.take_overflow() {
+            // Rendering history can intern past the cap, which resets the
+            // table under every subscription: the next frame on each must be
+            // a Snapshot (ADR 0011). Until then a client renders an unknown
+            // index as the default style, so nothing dangles.
+            self.needs_snapshot = true;
+            self.publisher.force_snapshot_all();
+        }
         let base = self.engine.history_base();
         History {
             surface_id: self.id,
@@ -422,13 +461,18 @@ impl Surface {
     }
 
     /// Renders the whole Surface. Clears the "needs Snapshot" latch.
+    ///
+    /// A Snapshot sends the whole style table but never resets it, so it
+    /// cannot invalidate another subscriber's indices (ADR 0011).
     pub fn snapshot(&mut self) -> Snapshot {
         if !self.pending.is_empty() || self.needs_snapshot {
             self.seq = self.seq.next();
             self.pending.clear();
         }
         self.needs_snapshot = false;
-        self.build_snapshot(self.seq)
+        let snapshot = self.build_snapshot(self.seq);
+        self.note_own_styles();
+        snapshot
     }
 
     /// Produces an incremental update, or `None` when nothing changed or a
@@ -447,11 +491,13 @@ impl Surface {
             return SurfaceUpdate::Idle;
         }
         let seq = self.seq.next();
-        if self.needs_snapshot {
+        if self.needs_snapshot || self.own_styles_stale() {
             self.needs_snapshot = false;
             self.pending.clear();
             self.seq = seq;
-            return SurfaceUpdate::Snapshot(Box::new(self.build_snapshot(seq)));
+            let snapshot = self.build_snapshot(seq);
+            self.note_own_styles();
+            return SurfaceUpdate::Snapshot(Box::new(snapshot));
         }
 
         let dirty = std::mem::replace(
@@ -461,20 +507,32 @@ impl Surface {
         let title = self.pending.title;
         let resized = self.pending.resized;
         let since = self.seq;
-        match self.build_delta(seq, since, &dirty, title, resized) {
+        match self.build_delta(
+            seq,
+            since,
+            self.own_styles_sent,
+            self.own_styles_generation,
+            &dirty,
+            title,
+            resized,
+        ) {
             Some(delta) => {
                 self.pending.clear();
                 self.seq = seq;
+                self.note_own_styles();
                 SurfaceUpdate::Delta(Box::new(delta))
             }
             None => {
-                // The style table overflowed mid-build (Q45): throw the frame
-                // away, keep the damage, and resync.
+                // The style table reset mid-build (Q45) or before the build
+                // (a `history` fetch crossed the cap): throw the frame away,
+                // keep the damage, and resync.
                 self.pending.dirty = dirty;
                 self.needs_snapshot = false;
                 self.pending.clear();
                 self.seq = seq;
-                SurfaceUpdate::Snapshot(Box::new(self.build_snapshot(seq)))
+                let snapshot = self.build_snapshot(seq);
+                self.note_own_styles();
+                SurfaceUpdate::Snapshot(Box::new(snapshot))
             }
         }
     }
@@ -484,6 +542,13 @@ impl Surface {
     /// Subscribes a Client (§6, Attach). Returns `false` on a double attach.
     pub fn attach(&mut self, client: ClientId, mode: AttachMode, now: Instant) -> bool {
         self.publisher.attach(client, mode, now)
+    }
+
+    /// Answers a repeated `Attach` with a fresh Snapshot (ADR 0011): the
+    /// attachment is kept and the mode may change. Returns `false` when the
+    /// Client was never attached.
+    pub fn resync(&mut self, client: ClientId, mode: AttachMode, now: Instant) -> bool {
+        self.publisher.resync(client, mode, now)
     }
 
     /// Unsubscribes a Client.
@@ -505,13 +570,16 @@ impl Surface {
     /// Builds the frames every attached Client is owed at `now`.
     ///
     /// This is the composition of [`Publisher::flush`] with the frame
-    /// builders; the Server just encodes and sends what comes back.
+    /// builders; the Server just encodes and sends what comes back. Each
+    /// frame's `since_seq` and `new_styles` come from that subscription's own
+    /// cursor, and building one Client's frame never invalidates another's
+    /// (ADR 0011).
     pub fn flush(&mut self, now: Instant) -> Vec<ClientFrame> {
         if !self.publisher.should_flush(now) {
             return Vec::new();
         }
         let seq = self.seq.next();
-        let emissions = self.publisher.flush(now, seq);
+        let emissions = self.publisher.flush(now, seq, self.styles.generation());
         if emissions.is_empty() {
             return Vec::new();
         }
@@ -534,6 +602,7 @@ impl Surface {
                 EmissionKind::BellOnly => {}
                 EmissionKind::Snapshot => {
                     let snapshot = self.build_snapshot(seq);
+                    self.note_client_styles(emission.client);
                     frames.push(ClientFrame {
                         client: emission.client,
                         msg: DataMsg::Snapshot(Box::new(snapshot)),
@@ -543,16 +612,29 @@ impl Surface {
                     dirty,
                     title,
                     resized,
+                    styles_from,
+                    styles_generation,
                 } => {
-                    let since = Seq::new(seq.get().saturating_sub(1));
-                    match self.build_delta(seq, since, &dirty, title, resized) {
-                        Some(delta) => frames.push(ClientFrame {
-                            client: emission.client,
-                            msg: DataMsg::Delta(Box::new(delta)),
-                        }),
+                    match self.build_delta(
+                        seq,
+                        emission.since,
+                        styles_from,
+                        styles_generation,
+                        &dirty,
+                        title,
+                        resized,
+                    ) {
+                        Some(delta) => {
+                            self.note_client_styles(emission.client);
+                            frames.push(ClientFrame {
+                                client: emission.client,
+                                msg: DataMsg::Delta(Box::new(delta)),
+                            });
+                        }
                         None => {
                             overflowed = true;
                             let snapshot = self.build_snapshot(seq);
+                            self.note_client_styles(emission.client);
                             frames.push(ClientFrame {
                                 client: emission.client,
                                 msg: DataMsg::Snapshot(Box::new(snapshot)),
@@ -572,8 +654,9 @@ impl Surface {
     // ------------------------------------------------------------ internals
 
     fn build_snapshot(&mut self, seq: Seq) -> Snapshot {
-        // Start from a clean table so one pass can never mix generations.
-        self.styles.reset();
+        // A Snapshot carries the whole table but must not reset it: another
+        // subscription may be mid-generation and hold these exact indices
+        // (ADR 0011, A-Q7).
         let _ = self.styles.take_overflow();
         let mut grid = self.engine.snapshot(&mut self.styles);
         if self.styles.take_overflow() {
@@ -582,7 +665,6 @@ impl Surface {
             grid = self.engine.snapshot(&mut self.styles);
             let _ = self.styles.take_overflow();
         }
-        self.styles.mark_all_flushed();
 
         self.last_cursor = grid.cursor;
         self.last_modes = grid.modes;
@@ -609,16 +691,24 @@ impl Surface {
         }
     }
 
-    /// Builds a Delta, or `None` when the style table overflowed while packing
-    /// (the caller must send a Snapshot instead).
+    /// Builds a Delta, or `None` when the table's generation no longer
+    /// matches the caller's cursor, or overflowed while packing rows (the
+    /// caller must send a Snapshot instead).
     fn build_delta(
         &mut self,
         seq: Seq,
         since: Seq,
+        styles_from: u16,
+        styles_generation: u32,
         dirty: &crate::vt::DirtySet,
         title_changed: bool,
         resized: Option<(u16, u16)>,
     ) -> Option<Delta> {
+        if self.styles.generation() != styles_generation {
+            // The table reset after this Delta was chosen: its cursor names
+            // indices of a dead generation.
+            return None;
+        }
         let mut rows: Vec<DirtyRow> = Vec::with_capacity(dirty.count());
         for index in dirty.iter() {
             let row: Row = self.engine.row(index as u16, &mut self.styles);
@@ -628,10 +718,11 @@ impl Surface {
             });
         }
         if self.styles.take_overflow() {
-            self.styles.rollback_flush_window();
+            // Interning a row crossed the cap: the table reset mid-build, so
+            // the rows above may reference stale indices.
             return None;
         }
-        let new_styles = self.styles.take_new();
+        let new_styles = self.styles.styles_from(styles_from as usize);
         let (cursor, modes) = self.engine.cursor_and_modes();
         let title = self.engine.title().to_owned();
 
@@ -725,6 +816,8 @@ impl Surface {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
 
     /// The Server moves a Surface into a per-Surface task, so it must be
@@ -822,5 +915,250 @@ mod tests {
         s.feed(b"\x1b[18t");
         let reply = String::from_utf8(s.take_pty_replies()).unwrap();
         assert!(reply.contains("4") && reply.contains("20"), "got {reply:?}");
+    }
+
+    // ------------------------------------------------- per-subscription fan-out
+    // ADR 0011: sequencing and style visibility are per subscription, and a
+    // repeated Attach is a Resync.
+
+    use st_proto::{Color, Style, StyleIdx};
+
+    const C1: ClientId = ClientId(1);
+    const C2: ClientId = ClientId(2);
+
+    fn snapshot_of(frames: &[ClientFrame], client: ClientId) -> &Snapshot {
+        match &frames
+            .iter()
+            .find(|f| f.client == client)
+            .unwrap_or_else(|| panic!("no frame for {client}"))
+            .msg
+        {
+            DataMsg::Snapshot(snapshot) => snapshot,
+            other => panic!("expected a Snapshot for {client}, got {other:?}"),
+        }
+    }
+
+    fn delta_of(frames: &[ClientFrame], client: ClientId) -> &Delta {
+        match &frames
+            .iter()
+            .find(|f| f.client == client)
+            .unwrap_or_else(|| panic!("no frame for {client}"))
+            .msg
+        {
+            DataMsg::Delta(delta) => delta,
+            other => panic!("expected a Delta for {client}, got {other:?}"),
+        }
+    }
+
+    fn red() -> Style {
+        Style {
+            fg: Color::Indexed(1),
+            ..Style::DEFAULT
+        }
+    }
+
+    fn green() -> Style {
+        Style {
+            fg: Color::Indexed(2),
+            ..Style::DEFAULT
+        }
+    }
+
+    /// R2: a Snapshot for one subscriber no longer resets the shared table, so
+    /// the indices every other subscriber holds stay valid.
+    #[test]
+    fn a_snapshot_for_one_client_does_not_reset_the_table_for_another() {
+        let mut s = fixture();
+        let t0 = Instant::now();
+        s.feed(b"\x1b[31mred");
+
+        assert!(s.attach(C1, AttachMode::Active, t0));
+        let frames = s.flush(t0);
+        let first = snapshot_of(&frames, C1);
+        let red_idx = first
+            .styles
+            .iter()
+            .position(|style| *style == red())
+            .expect("red was interned") as u16;
+        let seq = first.seq;
+        s.ack(C1, seq, t0);
+
+        // A second Client attaches; its Snapshot must not renumber C1's table.
+        let t1 = t0 + Duration::from_millis(20);
+        assert!(s.attach(C2, AttachMode::Active, t1));
+        let frames = s.flush(t1);
+        assert_eq!(frames.len(), 1, "only C2 has anything pending");
+        assert_eq!(
+            snapshot_of(&frames, C2).styles.len(),
+            s.styles().len(),
+            "a Snapshot carries the whole table"
+        );
+        assert_eq!(
+            s.styles().generation(),
+            0,
+            "the Snapshot for C2 did not reset the table"
+        );
+        assert_eq!(
+            s.styles().get(StyleIdx::new(red_idx)),
+            Some(red()),
+            "C1's index still resolves to red"
+        );
+    }
+
+    /// R2: a style interned while building one Client's Delta is still in the
+    /// other Client's cursor range, so its next Delta carries it.
+    #[test]
+    fn a_style_interned_for_one_client_reaches_another_clients_next_delta() {
+        let mut s = fixture();
+        let t0 = Instant::now();
+        assert!(s.attach(C1, AttachMode::Active, t0));
+        assert!(s.attach(C2, AttachMode::Active, t0));
+        let mut now = t0;
+        let frames = s.flush(now);
+        let seq = snapshot_of(&frames, C1).seq;
+        assert_eq!(snapshot_of(&frames, C2).seq, seq);
+        s.ack(C1, seq, now);
+        s.ack(C2, seq, now);
+
+        // Four Deltas fill C1's ack window; C2 acknowledges every frame.
+        for row in 1..=4u16 {
+            now += Duration::from_millis(20);
+            s.feed(format!("\x1b[{row};1Hx").as_bytes());
+            let frames = s.flush(now);
+            assert_eq!(frames.len(), 2, "round {row}");
+            s.ack(C2, delta_of(&frames, C2).seq, now);
+        }
+        assert!(
+            s.publisher()
+                .subscription(C1)
+                .unwrap()
+                .is_window_blocked(st_proto::MAX_UNACKED_DELTAS),
+            "C1's window is full"
+        );
+
+        // While C1 is blocked, C2's Delta interns a new style.
+        now += Duration::from_millis(20);
+        s.feed(b"\x1b[32mgreen");
+        let frames = s.flush(now);
+        assert_eq!(frames.len(), 1, "C1 is window-blocked");
+        assert_eq!(frames[0].client, C2);
+        let c2 = delta_of(&frames, C2);
+        assert!(
+            c2.new_styles.iter().any(|(_, style)| *style == green()),
+            "C2 got green: {:?}",
+            c2.new_styles
+        );
+        let c2_seq = c2.seq;
+        s.ack(C2, c2_seq, now);
+
+        // C1 Acks; its next Delta still carries the style it never saw.
+        let c1_last = s.publisher().subscription(C1).unwrap().last_sent_seq();
+        s.ack(C1, c1_last, now);
+        now += Duration::from_millis(20);
+        s.feed(b" more");
+        let frames = s.flush(now);
+        let c1 = delta_of(&frames, C1);
+        assert_eq!(c1.since_seq, c1_last, "no false Gap for C1");
+        assert!(
+            c1.new_styles.iter().any(|(_, style)| *style == green()),
+            "the style interned while C1 was blocked must reach it: {:?}",
+            c1.new_styles
+        );
+    }
+
+    /// A8: a repeated Attach from an attached Client is a Resync, not an
+    /// error, and the mode of the second Attach is honoured.
+    #[test]
+    fn a_repeated_attach_is_a_resync_snapshot() {
+        let mut s = fixture();
+        let t0 = Instant::now();
+        assert!(s.attach(C1, AttachMode::Active, t0));
+        let frames = s.flush(t0);
+        s.ack(C1, snapshot_of(&frames, C1).seq, t0);
+
+        assert!(
+            !s.attach(C1, AttachMode::Active, t0 + Duration::from_millis(20)),
+            "the second Attach reports an existing subscription"
+        );
+        assert!(
+            s.resync(C1, AttachMode::Passive, t0 + Duration::from_millis(20)),
+            "the Server turns it into a Resync"
+        );
+        let frames = s.flush(t0 + Duration::from_millis(20));
+        assert_eq!(frames.len(), 1);
+        assert!(
+            matches!(frames[0].msg, DataMsg::Snapshot(_)),
+            "a Resync is answered with a Snapshot"
+        );
+        assert_eq!(
+            s.publisher().subscription(C1).unwrap().mode(),
+            AttachMode::Passive,
+            "the mode of the second Attach is honoured"
+        );
+    }
+
+    /// `SurfaceExited` consumes a sequence number for the whole Surface; the
+    /// next Delta must chain on it or the Client reports a false Gap.
+    #[test]
+    fn a_delta_after_surface_exited_chains_on_the_exit_sequence() {
+        let mut s = fixture();
+        let t0 = Instant::now();
+        assert!(s.attach(C1, AttachMode::Active, t0));
+        let frames = s.flush(t0);
+        s.ack(C1, snapshot_of(&frames, C1).seq, t0);
+
+        let exited = s.set_exited(ExitStatus {
+            code: Some(0),
+            ..ExitStatus::default()
+        });
+        s.feed(b"final words");
+        let frames = s.flush(t0 + Duration::from_millis(20));
+        let delta = delta_of(&frames, C1);
+        assert_eq!(
+            delta.since_seq, exited.seq,
+            "the Delta after SurfaceExited must not look like a Gap"
+        );
+    }
+
+    /// Q45: an overflow resets the table and forces a Snapshot to every
+    /// subscriber, in the same flush.
+    #[test]
+    fn a_style_overflow_forces_a_snapshot_to_every_client() {
+        let mut s = fixture();
+        let t0 = Instant::now();
+        assert!(s.attach(C1, AttachMode::Active, t0));
+        assert!(s.attach(C2, AttachMode::Active, t0));
+        let mut now = t0;
+        let frames = s.flush(now);
+        let seq = snapshot_of(&frames, C1).seq;
+        s.ack(C1, seq, now);
+        s.ack(C2, seq, now);
+
+        let mut snapshots_for_both = 0;
+        for i in 0..4_200u32 {
+            let (r, g, b) = ((i >> 16) & 0xff, (i >> 8) & 0xff, i & 0xff);
+            s.feed(format!("\x1b[1;1H\x1b[38;2;{r};{g};{b}mX").as_bytes());
+            now += Duration::from_millis(10);
+            let frames = s.flush(now);
+            assert_eq!(frames.len(), 2, "both Clients are inside the window");
+            if frames.iter().all(|f| matches!(f.msg, DataMsg::Snapshot(_))) {
+                snapshots_for_both += 1;
+            }
+            for frame in &frames {
+                let seq = match &frame.msg {
+                    DataMsg::Snapshot(snapshot) => snapshot.seq,
+                    DataMsg::Delta(delta) => delta.seq,
+                    other => panic!("unexpected frame {other:?}"),
+                };
+                s.ack(frame.client, seq, now);
+            }
+        }
+
+        assert!(
+            (1..=2).contains(&snapshots_for_both),
+            "the overflow forces a Snapshot to both subscribers, got {snapshots_for_both}"
+        );
+        assert_eq!(s.styles().generation(), 1, "the table reset exactly once");
+        assert!(s.styles().len() < st_proto::STYLE_TABLE_CAP);
     }
 }

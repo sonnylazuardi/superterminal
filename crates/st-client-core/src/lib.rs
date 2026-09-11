@@ -81,7 +81,7 @@ pub use mouse::{
     MouseEventKind, MouseProtocol, WheelAction, WheelConfig,
 };
 pub use palette::{Palette, ResolvedStyle, Rgb};
-pub use replica::{Gap, Replica, ReplicaConfig, DEFAULT_HISTORY_CAP};
+pub use replica::{Gap, Replica, ReplicaConfig, ReplicaCounters, DEFAULT_HISTORY_CAP};
 pub use selection::{AbsPoint, Selection, SelectionConfig, SelectionMode};
 
 pub use dataplane::DataPlaneConnection;

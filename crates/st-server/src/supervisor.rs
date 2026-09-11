@@ -47,7 +47,9 @@ use st_proto::{DataMsg, DetachReason, Detached, SurfaceId, ViewState};
 use tokio::sync::{mpsc, Notify};
 
 use crate::metrics::Metrics;
-use crate::workspace::spawn::{SpawnError, SpawnSpec, SpawnedSurface, SurfaceSpawner};
+use crate::workspace::spawn::{
+    ScrollbackUsage, SpawnError, SpawnSpec, SpawnedSurface, SurfaceSpawner,
+};
 use crate::workspace::{SurfaceEvent, WorkspaceHandle};
 
 /// Bytes read from a PTY in one `read(2)` (`03-server.md` §4).
@@ -61,6 +63,15 @@ pub const PTY_QUEUE_DEPTH: usize = 16;
 /// unable to keep up. The ack window already bounds state frames to four per
 /// Surface, so reaching this means the socket itself has stopped draining.
 pub const DEFAULT_OUTBOUND_CAPACITY: usize = 256;
+
+/// Bytes charged per retained History cell when `server.status` estimates a
+/// Surface's scrollback.
+///
+/// The engine keeps alacritty `Cell`s — a codepoint, two colours, flags and an
+/// optional heap pointer — not the 8-byte wire [`st_proto::PackedCell`], so
+/// the number is deliberately round: 24 B per cell is the handover's working
+/// estimate (B-Q5: 168 cols × 10 000 rows × 24 B ≈ 40 MB per busy Surface).
+pub const APPROX_BYTES_PER_CELL: u64 = 24;
 
 // --------------------------------------------------------------------- events
 
@@ -867,6 +878,24 @@ impl SurfaceSpawner for SurfaceSupervisor {
             tracing::debug!(surface = %id, "destroyed a Surface");
         }
     }
+
+    fn scrollback_usage(&self) -> Vec<ScrollbackUsage> {
+        self.surfaces()
+            .into_iter()
+            .map(|slot| {
+                let surface = slot.lock();
+                let (cols, _) = surface.size();
+                let rows = surface.history_len();
+                ScrollbackUsage {
+                    surface: slot.id(),
+                    scrollback_rows: rows,
+                    scrollback_bytes: rows
+                        .saturating_mul(u64::from(cols))
+                        .saturating_mul(APPROX_BYTES_PER_CELL),
+                }
+            })
+            .collect()
+    }
 }
 
 /// `killpg(pgid, sig)`; `false` when the group is already gone.
@@ -991,5 +1020,60 @@ mod tests {
         let sup = SurfaceSupervisor::for_tests();
         assert!(sup.kill(SurfaceId(404), KillSignal::Hup).is_ok());
         assert!(!sup.remove(SurfaceId(404)));
+    }
+
+    /// Builds a PTY-less Surface with a small grid, the way the data-plane
+    /// tests do, so the test owns every byte the engine sees.
+    fn engine_surface(cols: u16, rows: u16) -> Surface {
+        Surface::new(SurfaceConfig {
+            id: SurfaceId(7),
+            engine: EngineConfig {
+                cols,
+                rows,
+                scrollback_lines: 200,
+                default_title: "test".to_owned(),
+                kitty_keyboard: true,
+            },
+            pty: None,
+            spawn_cwd: std::path::PathBuf::from("/"),
+            ..SurfaceConfig::default()
+        })
+        .expect("a PTY-less Surface never fails")
+    }
+
+    #[test]
+    fn a_busy_surface_reports_non_zero_scrollback_rows_and_bytes() {
+        let sup = SurfaceSupervisor::for_tests();
+        let slot = sup.insert_surface(engine_surface(20, 4)).expect("insert");
+        {
+            let mut surface = slot.lock();
+            assert_eq!(surface.history_len(), 0, "nothing has scrolled off yet");
+            for line in 1..=12 {
+                surface.feed(format!("line {line}\r\n").as_bytes());
+            }
+        }
+
+        let usage = sup.scrollback_usage();
+        assert_eq!(usage.len(), 1);
+        assert_eq!(usage[0].surface, SurfaceId(7));
+        assert!(
+            usage[0].scrollback_rows > 0,
+            "a busy surface keeps History: {usage:?}"
+        );
+        assert_eq!(
+            usage[0].scrollback_bytes,
+            usage[0].scrollback_rows * 20 * APPROX_BYTES_PER_CELL,
+            "bytes are rows × cols × the approximate cell size"
+        );
+    }
+
+    #[test]
+    fn a_surface_with_no_history_reports_zeroes() {
+        let sup = SurfaceSupervisor::for_tests();
+        sup.insert_surface(engine_surface(80, 24)).expect("insert");
+        let usage = sup.scrollback_usage();
+        assert_eq!(usage.len(), 1);
+        assert_eq!(usage[0].scrollback_rows, 0);
+        assert_eq!(usage[0].scrollback_bytes, 0);
     }
 }

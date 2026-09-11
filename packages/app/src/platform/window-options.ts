@@ -6,6 +6,7 @@
  */
 
 import type { Config, WindowBackground } from '../config/schema.js';
+import type { WindowDisplay, WindowPlacement } from '../state/client-state.js';
 import type { WindowBackgroundMode } from '../theme/tokens.js';
 import type { PlatformInfo } from './detect.js';
 
@@ -14,6 +15,13 @@ export interface WindowOptions {
   appName: string;
   width?: number;
   height?: number;
+  /** Window origin in logical px; only used together with `y`. */
+  x?: number;
+  y?: number;
+  /** The display the window was on, so the native side can re-identify it. */
+  display?: WindowDisplay;
+  /** Open maximized; the size above stays the windowed restore size. */
+  maximized?: boolean;
   minWidth: number;
   minHeight: number;
   windowBackground: WindowBackgroundMode;
@@ -48,11 +56,17 @@ export function resolveBackground(
   config: Config,
   platform: PlatformInfo,
 ): WindowBackgroundMode {
+  const configured = config.window.background;
+  if (platform.platform === 'win32') {
+    // A transparent GPUI quad punches through to the desktop on Windows, and
+    // the Win32 blur path is unreliable; `auto` and `blurred` are opaque, and
+    // only an explicit `transparent` stays transparent.
+    return configured === 'transparent' ? 'transparent' : 'opaque';
+  }
   if (platform.isMac) {
-    const configured = config.window.background;
     return configured === 'auto' ? 'blurred' : configured;
   }
-  return resolveLinuxBackground(config.window.background, platform);
+  return resolveLinuxBackground(configured, platform);
 }
 
 /**
@@ -77,17 +91,51 @@ export function resolveInitialSize(
   };
 }
 
+/**
+ * The remembered origin, when it can still be trusted.
+ *
+ * The JS side cannot enumerate the connected displays, so it only rejects an
+ * origin whose own remembered `display.bounds` no longer contains the window
+ * centre: that is the display-unplugged/rearranged case. When the platform
+ * recorded a display `uuid`, or no display bounds at all, the origin is passed
+ * through and the native side re-validates against the live display list (and
+ * opens centred when nothing matches).
+ */
+export function resolveWindowOrigin(
+  remembered: WindowPlacement | null,
+): { x: number; y: number } | null {
+  if (!remembered || remembered.x === undefined || remembered.y === undefined) return null;
+  const display = remembered.display;
+  const bounds = display?.bounds;
+  if (bounds && display?.uuid === undefined) {
+    const centreX = remembered.x + remembered.width / 2;
+    const centreY = remembered.y + remembered.height / 2;
+    const inside =
+      centreX >= bounds.x &&
+      centreX < bounds.x + bounds.width &&
+      centreY >= bounds.y &&
+      centreY < bounds.y + bounds.height;
+    if (!inside) return null;
+  }
+  return { x: remembered.x, y: remembered.y };
+}
+
 export function buildWindowOptions(
   config: Config,
   platform: PlatformInfo,
-  remembered: { width: number; height: number } | null = null,
+  remembered: WindowPlacement | null = null,
 ): WindowOptions {
   const windowBackground = resolveBackground(config, platform);
   const size = resolveInitialSize(config, remembered);
+  const origin = resolveWindowOrigin(remembered);
+  const display = remembered?.display;
   return {
     title: APP_TITLE,
     appName: APP_TITLE,
     ...(size ?? {}),
+    ...(origin ?? {}),
+    ...(display ? { display } : {}),
+    ...(remembered?.maximized ? { maximized: true } : {}),
     minWidth: MIN_WIDTH,
     minHeight: MIN_HEIGHT,
     windowBackground,

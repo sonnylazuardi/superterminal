@@ -88,6 +88,8 @@ pub struct Metrics {
     pub deltas_sent: Counter,
     /// `Snapshot` messages sent (data plane).
     pub snapshots_sent: Counter,
+    /// Repeated `Attach` messages answered with a Snapshot (ADR 0011).
+    pub resyncs: Counter,
     /// Damage events observed (data plane); `damage_events / deltas_sent` is
     /// the coalesce ratio §11 asks for.
     pub damage_events: Counter,
@@ -118,6 +120,7 @@ impl Metrics {
             "frames_out": self.frames_out.get(),
             "deltas_sent": deltas,
             "snapshots_sent": self.snapshots_sent.get(),
+            "resyncs": self.resyncs.get(),
             "damage_events": damage,
             "coalesce_ratio": if deltas == 0 { 0.0 } else { damage as f64 / deltas as f64 },
             "connections_control": self.control_clients.get(),
@@ -199,6 +202,7 @@ mod tests {
             "frames_out",
             "deltas_sent",
             "snapshots_sent",
+            "resyncs",
             "coalesce_ratio",
             "connections_control",
             "connections_data",

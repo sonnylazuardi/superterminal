@@ -11,7 +11,13 @@
 //! command reads the raw `result` object and prints any of those counters it
 //! finds under an optional `metrics` key (or at the top level), and prints
 //! nothing about them otherwise — the "if available" in the M1 brief.
+//!
+//! **Scrollback.** The server may also add a `scrollback` array beside
+//! `metrics`, one entry per Surface (`scrollback_rows`, `scrollback_bytes`;
+//! handover B.2 step 7). It is printed as a per-Surface block and kept in
+//! `--json` under `status.scrollback`; an older server simply omits it.
 
+use std::collections::BTreeMap;
 use std::io::Write;
 
 use serde_json::{json, Value};
@@ -35,6 +41,8 @@ pub struct Metrics {
     pub deltas_sent: Option<u64>,
     /// Snapshots sent.
     pub snapshots_sent: Option<u64>,
+    /// Repeated Attaches answered with a Snapshot (Resyncs).
+    pub resyncs: Option<u64>,
 }
 
 impl Metrics {
@@ -50,6 +58,7 @@ impl Metrics {
             frames_out: get("frames_out"),
             deltas_sent: get("deltas_sent"),
             snapshots_sent: get("snapshots_sent"),
+            resyncs: get("resyncs"),
         }
     }
 
@@ -57,6 +66,43 @@ impl Metrics {
     #[must_use]
     pub fn is_empty(self) -> bool {
         self == Self::default()
+    }
+}
+
+/// One Surface's scrollback footprint, parsed from the optional `scrollback`
+/// array in the `server.status` result (handover B.2 step 7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Scrollback {
+    /// Surface id.
+    pub surface: u32,
+    /// Retained History rows.
+    pub rows: u64,
+    /// Approximate bytes those rows occupy.
+    pub bytes: u64,
+}
+
+impl Scrollback {
+    /// Parses the array, dropping entries with a missing or non-numeric field,
+    /// so a future server shape degrades to "not reported" rather than an
+    /// error. An absent key yields an empty vector.
+    #[must_use]
+    pub fn from_status_value(value: &Value) -> Vec<Self> {
+        value
+            .get("scrollback")
+            .and_then(Value::as_array)
+            .map(|entries| {
+                entries
+                    .iter()
+                    .filter_map(|entry| {
+                        Some(Self {
+                            surface: u32::try_from(entry.get("surface")?.as_u64()?).ok()?,
+                            rows: entry.get("scrollback_rows")?.as_u64()?,
+                            bytes: entry.get("scrollback_bytes")?.as_u64()?,
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 }
 
@@ -71,6 +117,10 @@ pub struct StatusReport {
     pub raw: Value,
     /// Optional counters.
     pub metrics: Metrics,
+    /// Per-Surface scrollback; empty when the server does not report it.
+    pub scrollback: Vec<Scrollback>,
+    /// Surface ids to display titles, for the scrollback block.
+    pub surface_titles: BTreeMap<u32, String>,
     /// Number of Sessions in the workspace document.
     pub sessions: usize,
     /// Number of Tabs across all Sessions.
@@ -88,9 +138,23 @@ pub fn run(connector: &dyn Connector, json: bool, out: &mut dyn Write) -> Result
     })?;
     let workspace: WorkspaceSnapshot = client.request(|id| Req::WorkspaceGet { id })?;
 
+    let surface_titles = workspace
+        .surfaces
+        .iter()
+        .map(|meta| {
+            let title = meta
+                .user_title
+                .clone()
+                .unwrap_or_else(|| meta.title.clone());
+            (meta.id.get(), title)
+        })
+        .collect();
+
     let report = StatusReport {
         socket: connector.describe(),
         metrics: Metrics::from_status_value(&raw),
+        scrollback: Scrollback::from_status_value(&raw),
+        surface_titles,
         raw,
         sessions: workspace.workspace.sessions.len(),
         tabs: workspace
@@ -148,6 +212,9 @@ pub fn render_text(report: &StatusReport) -> String {
     if let Some(snapshots) = m.snapshots_sent {
         lines.push(("snapshots", snapshots.to_string()));
     }
+    if let Some(resyncs) = m.resyncs {
+        lines.push(("resyncs", resyncs.to_string()));
+    }
     if let Some(frames) = m.frames_out {
         lines.push((
             "frames out",
@@ -157,13 +224,55 @@ pub fn render_text(report: &StatusReport) -> String {
     if m.is_empty() {
         lines.push(("metrics", "not reported by this server build".to_string()));
     }
+    if !report.scrollback.is_empty() {
+        let total_rows: u64 = report.scrollback.iter().map(|s| s.rows).sum();
+        let total_bytes: u64 = report.scrollback.iter().map(|s| s.bytes).sum();
+        lines.push((
+            "scrollback",
+            format!(
+                "{} rows / {} across {}",
+                total_rows,
+                format_bytes(total_bytes),
+                surface_count(report.scrollback.len()),
+            ),
+        ));
+    }
 
     let width = lines.iter().map(|(k, _)| k.len()).max().unwrap_or(0);
     let mut text = String::new();
     for (key, value) in lines {
         text.push_str(&format!("{key:width$}  {value}\n"));
     }
+    for entry in &report.scrollback {
+        text.push_str(&format!(
+            "  {}\n",
+            describe_scrollback(entry, &report.surface_titles)
+        ));
+    }
     text
+}
+
+/// `1 surface` / `2 surfaces`, for the scrollback total line.
+fn surface_count(n: usize) -> String {
+    if n == 1 {
+        "1 surface".to_string()
+    } else {
+        format!("{n} surfaces")
+    }
+}
+
+/// One per-Surface scrollback line: `surface 9 "zsh": 8421 rows, 32.9 MiB`.
+fn describe_scrollback(entry: &Scrollback, titles: &BTreeMap<u32, String>) -> String {
+    let mut line = format!("surface {}", entry.surface);
+    if let Some(title) = titles.get(&entry.surface) {
+        line.push_str(&format!(" {title:?}"));
+    }
+    line.push_str(&format!(
+        ": {} rows, {}",
+        entry.rows,
+        format_bytes(entry.bytes)
+    ));
+    line
 }
 
 fn per_sec(count: u64, uptime_s: u64) -> String {
@@ -196,6 +305,8 @@ mod tests {
         StatusReport {
             socket: "/run/st.sock".into(),
             metrics: Metrics::from_status_value(&raw),
+            scrollback: Scrollback::from_status_value(&raw),
+            surface_titles: BTreeMap::new(),
             raw,
             sessions: 2,
             tabs: 3,
@@ -244,14 +355,36 @@ mod tests {
             "pty_bytes_out": 302u64,
             "deltas_sent": 1_200u64,
             "snapshots_sent": 4u64,
+            "resyncs": 2u64,
             "frames_out": 1_300u64,
         });
         let text = render_text(&report(100, raw));
         assert!(text.contains("pty in/out  1.5 MiB / 302 B\n"));
         assert!(text.contains("deltas      1200 (12.0/s)\n"));
         assert!(text.contains("snapshots   4\n"));
+        assert!(text.contains("resyncs     2\n"));
         assert!(text.contains("frames out  1300 (13.0/s)\n"));
         assert!(!text.contains("not reported"));
+    }
+
+    #[test]
+    fn resyncs_appears_and_defaults_to_zero() {
+        let mut raw = base();
+        raw["metrics"] = json!({ "snapshots_sent": 1u64, "resyncs": 0u64 });
+        let metrics = Metrics::from_status_value(&raw);
+        assert_eq!(metrics.resyncs, Some(0), "a reported zero is not 'absent'");
+        let text = render_text(&report(10, raw));
+        assert!(
+            text.lines()
+                .any(|line| line.starts_with("resyncs") && line.trim_end().ends_with('0')),
+            "{text}"
+        );
+
+        // An older server that does not report the counter prints nothing.
+        let mut without = base();
+        without["metrics"] = json!({ "snapshots_sent": 1u64 });
+        assert_eq!(Metrics::from_status_value(&without).resyncs, None);
+        assert!(!render_text(&report(10, without)).contains("resyncs"));
     }
 
     #[test]
@@ -262,6 +395,64 @@ mod tests {
         assert_eq!(m.deltas_sent, Some(10));
         assert_eq!(m.pty_bytes_in, None);
         assert!(!m.is_empty());
+    }
+
+    #[test]
+    fn scrollback_is_printed_per_surface() {
+        let mut raw = base();
+        raw["scrollback"] = json!([
+            {"surface": 9, "scrollback_rows": 8_421u64, "scrollback_bytes": 34_521_088u64},
+            {"surface": 10, "scrollback_rows": 0u64, "scrollback_bytes": 0u64},
+        ]);
+        let mut r = report(10, raw);
+        r.surface_titles = BTreeMap::from([(9, "zsh".to_string()), (10, "editor".to_string())]);
+        let text = render_text(&r);
+        assert!(
+            text.contains("scrollback  8421 rows / 32.9 MiB across 2 surfaces\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains("  surface 9 \"zsh\": 8421 rows, 32.9 MiB\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains("  surface 10 \"editor\": 0 rows, 0 B\n"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn scrollback_lines_are_absent_when_the_server_does_not_report_them() {
+        let text = render_text(&report(10, base()));
+        assert!(!text.contains("scrollback"), "{text}");
+    }
+
+    #[test]
+    fn scrollback_parser_skips_malformed_entries() {
+        let raw = json!({
+            "scrollback": [
+                {"surface": 9, "scrollback_rows": 12, "scrollback_bytes": 2_304},
+                {"surface": "ten", "scrollback_rows": 1, "scrollback_bytes": 24},
+                {"surface": 11, "scrollback_rows": 3},
+                {"surface": 12, "scrollback_rows": 4, "scrollback_bytes": 96},
+            ]
+        });
+        assert_eq!(
+            Scrollback::from_status_value(&raw),
+            vec![
+                Scrollback {
+                    surface: 9,
+                    rows: 12,
+                    bytes: 2_304
+                },
+                Scrollback {
+                    surface: 12,
+                    rows: 4,
+                    bytes: 96
+                },
+            ]
+        );
+        assert!(Scrollback::from_status_value(&base()).is_empty());
     }
 
     #[test]
@@ -277,8 +468,12 @@ mod tests {
     fn json_keeps_unknown_server_fields() {
         let mut raw = base();
         raw["future_field"] = json!("kept");
+        raw["scrollback"] = json!([
+            {"surface": 9, "scrollback_rows": 12u64, "scrollback_bytes": 2_304u64},
+        ]);
         let doc: Value = serde_json::from_str(&render_json(&report(1, raw))).unwrap();
         assert_eq!(doc["status"]["future_field"], "kept");
+        assert_eq!(doc["status"]["scrollback"][0]["scrollback_bytes"], 2_304);
         assert_eq!(doc["sessions"], 2);
         assert_eq!(doc["tabs"], 3);
         assert_eq!(doc["socket"], "/run/st.sock");

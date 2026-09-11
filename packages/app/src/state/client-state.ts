@@ -1,6 +1,6 @@
 /**
  * Client State (CONTEXT.md, ADR 0008): what this Client on this machine
- * remembers from its last run — the last window size and the Tab Layout.
+ * remembers from its last run — the Window Placement and the Tab Layout.
  *
  * It is a separate file from `config.toml` on purpose: Config is the user's
  * hand-written declaration and the program never rewrites it, while this
@@ -29,6 +29,25 @@ const WindowSizeSchema = z.object({
   height: z.number().finite().positive().max(MAX_WINDOW_DIMENSION),
 });
 
+/** The origin is valid only as a pair; a lone `x` is a corrupt placement. */
+const WindowOriginSchema = z.object({
+  x: z.number().finite(),
+  y: z.number().finite(),
+});
+
+const WindowDisplayBoundsSchema = z.object({
+  x: z.number().finite(),
+  y: z.number().finite(),
+  width: z.number().finite().positive().max(MAX_WINDOW_DIMENSION),
+  height: z.number().finite().positive().max(MAX_WINDOW_DIMENSION),
+});
+
+/** The display object's shape only; `uuid` and `bounds` parse field-wise. */
+const WindowDisplayFileSchema = z.object({
+  uuid: z.unknown().optional(),
+  bounds: z.unknown().optional(),
+});
+
 /**
  * The file's outer shape only. Each field is validated on its own below so
  * one bad field does not throw the others away.
@@ -49,9 +68,38 @@ export interface WindowSize {
   height: number;
 }
 
+/** A connected display's frame, in logical pixels (gpuix's `DisplayBounds`). */
+export interface WindowDisplayBounds {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * The display a window was on. `uuid` is the stable identifier when the
+ * platform has one; `bounds` is the fallback for platforms that do not.
+ */
+export interface WindowDisplay {
+  uuid?: string;
+  bounds?: WindowDisplayBounds;
+}
+
+/**
+ * The Window Placement (CONTEXT.md): size plus the optional origin, display
+ * and maximized state. Only `width`/`height` are required, so a v1 file (or a
+ * window whose position read failed) still restores its size.
+ */
+export interface WindowPlacement extends WindowSize {
+  x?: number;
+  y?: number;
+  maximized?: boolean;
+  display?: WindowDisplay;
+}
+
 export interface ClientState {
-  /** Paintable size in logical pixels, as gpuix reports it. */
-  window: WindowSize | null;
+  /** The Window Placement, as gpuix reports it in logical pixels. */
+  window: WindowPlacement | null;
   /** Tab Layout: `true` for the sidebar, `false` for the strip. */
   verticalTabs: boolean | null;
   /** Sidebar column width in logical px, within the layout bounds. */
@@ -70,6 +118,59 @@ export const EMPTY_CLIENT_STATE: ClientState = {
 /** `$XDG_STATE_HOME/superterminal/client.json` (or the platform equivalent). */
 export function clientStatePath(input: PathEnv = {}): string {
   return join(stateDir(input), CLIENT_STATE_FILENAME);
+}
+
+/**
+ * One window record, field by field. A bad size throws the record away; a bad
+ * `x` drops only the origin, so a corrupt position still restores the size
+ * (and, if they are intact, the display and maximized state).
+ */
+function parseWindow(raw: unknown, warnings: string[]): WindowPlacement | null {
+  const size = WindowSizeSchema.safeParse(raw);
+  if (!size.success) {
+    warnings.push('[superterminal] client state: remembered window size ignored');
+    return null;
+  }
+  const record = raw as Record<string, unknown>;
+  const window: WindowPlacement = { width: size.data.width, height: size.data.height };
+
+  if (record['x'] !== undefined || record['y'] !== undefined) {
+    const origin = WindowOriginSchema.safeParse({ x: record['x'], y: record['y'] });
+    if (origin.success) {
+      window.x = origin.data.x;
+      window.y = origin.data.y;
+    } else {
+      warnings.push('[superterminal] client state: remembered window position ignored');
+    }
+  }
+
+  if (record['maximized'] !== undefined) {
+    if (typeof record['maximized'] === 'boolean') window.maximized = record['maximized'];
+    else warnings.push('[superterminal] client state: remembered maximized state ignored');
+  }
+
+  const display = parseWindowDisplay(record['display'], warnings);
+  if (display) window.display = display;
+
+  return window;
+}
+
+function parseWindowDisplay(raw: unknown, warnings: string[]): WindowDisplay | undefined {
+  if (raw === undefined) return undefined;
+  const parsed = WindowDisplayFileSchema.safeParse(raw);
+  const display: WindowDisplay = {};
+  if (parsed.success && typeof parsed.data.uuid === 'string' && parsed.data.uuid.length > 0) {
+    display.uuid = parsed.data.uuid;
+  }
+  const bounds = parsed.success
+    ? WindowDisplayBoundsSchema.safeParse(parsed.data.bounds)
+    : undefined;
+  if (bounds?.success) display.bounds = bounds.data;
+  if (display.uuid === undefined && display.bounds === undefined) {
+    warnings.push('[superterminal] client state: remembered display ignored');
+    return undefined;
+  }
+  return display;
 }
 
 /**
@@ -95,12 +196,7 @@ export function parseClientState(text: string): { state: ClientState; warnings: 
     };
   }
   const warnings: string[] = [];
-  let window: WindowSize | null = null;
-  if (parsed.data.window !== undefined) {
-    const size = WindowSizeSchema.safeParse(parsed.data.window);
-    if (size.success) window = size.data;
-    else warnings.push('[superterminal] client state: remembered window size ignored');
-  }
+  const window = parsed.data.window !== undefined ? parseWindow(parsed.data.window, warnings) : null;
   let verticalTabs: boolean | null = null;
   if (parsed.data.verticalTabs !== undefined) {
     if (typeof parsed.data.verticalTabs === 'boolean') verticalTabs = parsed.data.verticalTabs;
@@ -151,16 +247,31 @@ export function loadClientState(options: LoadClientStateOptions = {}): {
   return { state, path, warnings };
 }
 
+/**
+ * The window record as it is written. `maximized: false` is the default and is
+ * omitted, so a never-maximized file does not change shape across runs.
+ */
+function serializeWindow(window: WindowPlacement): WindowPlacement {
+  const file: WindowPlacement = { width: window.width, height: window.height };
+  if (window.x !== undefined && window.y !== undefined) {
+    file.x = window.x;
+    file.y = window.y;
+  }
+  if (window.maximized) file.maximized = true;
+  if (window.display) file.display = window.display;
+  return file;
+}
+
 /** The exact bytes written; exported so tests can assert on the format. */
 export function serializeClientState(state: ClientState): string {
   const file: {
     version: number;
-    window?: WindowSize;
+    window?: WindowPlacement;
     verticalTabs?: boolean;
     sidebarWidth?: number;
     fontZoom?: number;
   } = { version: CLIENT_STATE_VERSION };
-  if (state.window) file.window = state.window;
+  if (state.window) file.window = serializeWindow(state.window);
   if (state.verticalTabs !== null) file.verticalTabs = state.verticalTabs;
   if (state.sidebarWidth !== null) file.sidebarWidth = state.sidebarWidth;
   // Zero is the default; not writing it keeps a never-zoomed file unchanged.
@@ -180,16 +291,45 @@ export function saveClientState(path: string, state: ClientState): void {
   renameSync(tmp, path);
 }
 
+/** Field-wise equality of two placements; `undefined` and `false` agree. */
+export function sameWindowPlacement(
+  a: WindowPlacement | null,
+  b: WindowPlacement | null,
+): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return (
+    a.width === b.width &&
+    a.height === b.height &&
+    a.x === b.x &&
+    a.y === b.y &&
+    (a.maximized ?? false) === (b.maximized ?? false) &&
+    sameWindowDisplay(a.display, b.display)
+  );
+}
+
+function sameWindowDisplay(a: WindowDisplay | undefined, b: WindowDisplay | undefined): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  if (a.uuid !== b.uuid) return false;
+  const aBounds = a.bounds;
+  const bBounds = b.bounds;
+  if (aBounds === bBounds) return true;
+  if (!aBounds || !bBounds) return false;
+  return (
+    aBounds.x === bBounds.x &&
+    aBounds.y === bBounds.y &&
+    aBounds.width === bBounds.width &&
+    aBounds.height === bBounds.height
+  );
+}
+
 export function sameClientState(a: ClientState, b: ClientState): boolean {
   return (
     a.verticalTabs === b.verticalTabs &&
     a.sidebarWidth === b.sidebarWidth &&
     (a.fontZoom ?? 0) === (b.fontZoom ?? 0) &&
-    (a.window === b.window ||
-      (a.window !== null &&
-        b.window !== null &&
-        a.window.width === b.window.width &&
-        a.window.height === b.window.height))
+    sameWindowPlacement(a.window, b.window)
   );
 }
 

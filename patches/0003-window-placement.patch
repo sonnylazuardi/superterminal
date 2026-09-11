@@ -1,0 +1,504 @@
+diff --git a/packages/native/index.d.ts b/packages/native/index.d.ts
+index 170109d..cdab6f1 100644
+--- a/packages/native/index.d.ts
++++ b/packages/native/index.d.ts
+@@ -44,6 +44,13 @@ export declare class GpuixRenderer {
+    * wrong place on every window that was not exactly that size.
+    */
+   getWindowSize(): WindowSize
++  /**
++   * Where the window is and how it is displayed, in logical pixels.
++   *
++   * Client State persists this so the next run can reopen the window at the
++   * same origin, size, display and maximized state.
++   */
++  getWindowPlacement(): WindowPlacement
+   getWindowInsets(): WindowInsets
+   /** `"hidden"` | `"minimal"` | `"full"`. Paints into the scene after layout. */
+   setDebugFrameOverlay(mode: string): string
+@@ -348,6 +355,14 @@ export interface DebugFrameOverlayStats {
+   samples: number
+ }
+ 
++/** A display's frame in logical pixels. */
++export interface DisplayBounds {
++  x: number
++  y: number
++  width: number
++  height: number
++}
++
+ export interface EdgeInsets {
+   top: number
+   right: number
+@@ -509,6 +524,17 @@ export interface WindowOptions {
+   appName?: string
+   width?: number
+   height?: number
++  /**
++   * Window origin in logical pixels. Used only together with `y`; the display
++   * is chosen by `display.uuid` first, else by the display containing the
++   * window centre, else the primary display.
++   */
++  x?: number
++  y?: number
++  /** The display the window last ran on, so a restore can find it again. */
++  display?: WindowOptionsDisplay
++  /** Open the window maximized. The bounds stay the windowed restore size. */
++  maximized?: boolean
+   minWidth?: number
+   minHeight?: number
+   resizable?: boolean
+@@ -536,6 +562,33 @@ export interface WindowOptions {
+   show?: boolean
+ }
+ 
++/**
++ * The display recorded in `WindowOptions`; `bounds` is optional because a
++ * caller that only needs to re-identify the display can send the uuid alone.
++ */
++export interface WindowOptionsDisplay {
++  uuid?: string
++  bounds?: DisplayBounds
++}
++
++/** The window's restore geometry and state, for Client State. */
++export interface WindowPlacement {
++  x: number
++  y: number
++  width: number
++  height: number
++  maximized: boolean
++  fullscreen: boolean
++  display?: WindowPlacementDisplay
++}
++
++/** The display a window is on, as reported by `getWindowPlacement`. */
++export interface WindowPlacementDisplay {
++  /** Stable across restarts when the platform can provide one. */
++  uuid?: string
++  bounds: DisplayBounds
++}
++
+ export interface WindowSize {
+   width: number
+   height: number
+diff --git a/packages/native/src/renderer.rs b/packages/native/src/renderer.rs
+index fc7517e..c14fd74 100644
+--- a/packages/native/src/renderer.rs
++++ b/packages/native/src/renderer.rs
+@@ -264,6 +264,133 @@ fn recv_ui_response<T>(receiver: std::sync::mpsc::Receiver<T>, operation: &str)
+     }
+ }
+ 
++/// The window's restore geometry and display state, for Client State.
++///
++/// `window_bounds()` carries the restore bounds while a window is maximized
++/// or fullscreen; `bounds()` is what is on screen now, which is what a plain
++/// windowed window should remember.
++#[cfg(any(
++    target_os = "macos",
++    target_os = "windows",
++    target_os = "linux",
++    target_os = "freebsd"
++))]
++fn window_placement(window: &gpui::Window, cx: &gpui::App) -> WindowPlacement {
++    #[cfg(not(target_os = "windows"))]
++    let live = window.bounds();
++    let (restore, bounds_maximized, bounds_fullscreen) = match window.window_bounds() {
++        gpui::WindowBounds::Windowed(bounds) => (bounds, false, false),
++        gpui::WindowBounds::Maximized(bounds) => (bounds, true, false),
++        gpui::WindowBounds::Fullscreen(bounds) => (bounds, false, true),
++    };
++    // macOS reports a zoomed window as `Windowed`; `is_maximized` is the only
++    // signal there, and on Windows it also catches Win+Up snaps.
++    let maximized = bounds_maximized || window.is_maximized();
++    let fullscreen = bounds_fullscreen || window.is_fullscreen();
++    // On Windows `window_bounds().Windowed` is computed with the same
++    // client-rect math the create path consumes, so it round-trips exactly.
++    // Saving `window.bounds()` (the real client rect) instead walked the
++    // window down by the title-bar asymmetry on every relaunch: gpui splits
++    // the non-client height evenly top/bottom, while the real top is the
++    // whole title bar.
++    #[cfg(target_os = "windows")]
++    let bounds = restore;
++    #[cfg(not(target_os = "windows"))]
++    let bounds = if maximized || fullscreen { restore } else { live };
++    WindowPlacement {
++        x: f32::from(bounds.origin.x) as f64,
++        y: f32::from(bounds.origin.y) as f64,
++        width: f32::from(bounds.size.width) as f64,
++        height: f32::from(bounds.size.height) as f64,
++        maximized,
++        fullscreen,
++        display: window.display(cx).map(|display| {
++            let display_bounds = display.bounds();
++            WindowPlacementDisplay {
++                uuid: display.uuid().ok().map(|uuid| uuid.to_string()),
++                bounds: DisplayBounds {
++                    x: f32::from(display_bounds.origin.x) as f64,
++                    y: f32::from(display_bounds.origin.y) as f64,
++                    width: f32::from(display_bounds.size.width) as f64,
++                    height: f32::from(display_bounds.size.height) as f64,
++                },
++            }
++        }),
++    }
++}
++
++/// The display a remembered window belonged to, by uuid first and by the
++/// display containing the window centre second.
++#[cfg(any(
++    target_os = "macos",
++    target_os = "windows",
++    target_os = "linux",
++    target_os = "freebsd"
++))]
++fn remembered_display_id(
++    options: &WindowOptions,
++    x: f64,
++    y: f64,
++    width: f32,
++    height: f32,
++    cx: &gpui::App,
++) -> Option<gpui::DisplayId> {
++    let displays = cx.displays();
++    if let Some(uuid) = options
++        .display
++        .as_ref()
++        .and_then(|display| display.uuid.as_deref())
++    {
++        if let Some(found) = displays.iter().find(|candidate| {
++            candidate
++                .uuid()
++                .map(|uuid| uuid.to_string())
++                .ok()
++                .as_deref()
++                == Some(uuid)
++        }) {
++            return Some(found.id());
++        }
++    }
++    let centre = gpui::point(
++        gpui::px(x as f32 + width / 2.0),
++        gpui::px(y as f32 + height / 2.0),
++    );
++    displays
++        .into_iter()
++        .find(|candidate| candidate.bounds().contains(&centre))
++        .map(|display| display.id())
++}
++
++/// The window bounds and display to open with.
++///
++/// A remembered `x`/`y` is only used when its display can still be found;
++/// otherwise (no `x`/`y`, or a display that is gone) the window opens centred
++/// on the primary display, exactly as before placement was remembered.
++#[cfg(any(
++    target_os = "macos",
++    target_os = "windows",
++    target_os = "linux",
++    target_os = "freebsd"
++))]
++fn resolve_window_bounds(
++    options: &WindowOptions,
++    cx: &gpui::App,
++) -> (gpui::Bounds<gpui::Pixels>, Option<gpui::DisplayId>) {
++    let width = options.width.unwrap_or(800.0) as f32;
++    let height = options.height.unwrap_or(600.0) as f32;
++    let size = gpui::size(gpui::px(width), gpui::px(height));
++    if let (Some(x), Some(y)) = (options.x, options.y) {
++        if let Some(display_id) = remembered_display_id(options, x, y, width, height, cx) {
++            return (
++                gpui::Bounds::new(gpui::point(gpui::px(x as f32), gpui::px(y as f32)), size),
++                Some(display_id),
++            );
++        }
++    }
++    (gpui::Bounds::centered(None, size, cx), None)
++}
++
+ #[cfg(target_os = "macos")]
+ fn update_window<R>(
+     update: impl FnOnce(&mut GpuixView, &mut gpui::Window, &mut gpui::Context<GpuixView>) -> R,
+@@ -405,6 +532,9 @@ enum UiCommand {
+     GetWindowSize {
+         response: SyncSender<WindowSize>,
+     },
++    GetWindowPlacement {
++        response: SyncSender<WindowPlacement>,
++    },
+     GetElementBounds {
+         id: u64,
+         response: SyncSender<Option<crate::automation::ElementBounds>>,
+@@ -585,6 +715,11 @@ async fn run_ui_commands(
+                         .ok();
+                 })
+             }
++            UiCommand::GetWindowPlacement { response } => {
++                window.update(cx, move |_view, window, cx| {
++                    response.send(window_placement(window, cx)).ok();
++                })
++            }
+             UiCommand::GetAutomationBounds { response } => {
+                 window.update(cx, move |_view, window, cx| {
+                     cx.notify();
+@@ -959,8 +1094,6 @@ impl GpuixRenderer {
+             ));
+         }
+ 
+-        let width = options.width.unwrap_or(800.0);
+-        let height = options.height.unwrap_or(600.0);
+         let title = options.title.clone().unwrap_or_else(|| "GPUIX".to_string());
+         let app_name = options.app_name.clone().unwrap_or_else(|| title.clone());
+         // `focus: false` must also skip `cx.activate`: the window flag only
+@@ -987,14 +1120,10 @@ impl GpuixRenderer {
+             // After the other bindings: `set_menus` reads key equivalents out of
+             // the keymap, so every binding must exist before it runs.
+             crate::app_menu::init(&app_name, cx);
+-            let bounds = gpui::Bounds::centered(
+-                None,
+-                gpui::size(gpui::px(width as f32), gpui::px(height as f32)),
+-                cx,
+-            );
++            let (bounds, display_id) = resolve_window_bounds(&window_options, cx);
+ 
+             match cx.open_window(
+-                to_gpui_window_options(&window_options, bounds),
++                to_gpui_window_options(&window_options, bounds, display_id),
+                 |_window, cx| {
+                     cx.new(|_| {
+                         GpuixView::new(tree.clone(), callback.clone(), title, selection.clone())
+@@ -1087,8 +1216,6 @@ impl GpuixRenderer {
+             return Err(Error::from_reason("Renderer is already initialized"));
+         }
+ 
+-        let width = options.width.unwrap_or(800.0);
+-        let height = options.height.unwrap_or(600.0);
+         let title = options.title.clone().unwrap_or_else(|| "GPUIX".to_string());
+         // `focus: false` must also skip `cx.activate`: the window flag only
+         // decides key status inside the app, activation is what steals focus.
+@@ -1116,13 +1243,9 @@ impl GpuixRenderer {
+                         .with_quit_mode(gpui::QuitMode::LastWindowClosed)
+                         .run(move |cx| {
+                             crate::custom_elements::input::init(cx);
+-                            let bounds = gpui::Bounds::centered(
+-                                None,
+-                                gpui::size(gpui::px(width as f32), gpui::px(height as f32)),
+-                                cx,
+-                            );
++                            let (bounds, display_id) = resolve_window_bounds(&window_options, cx);
+                             let window = match cx.open_window(
+-                                to_gpui_window_options(&window_options, bounds),
++                                to_gpui_window_options(&window_options, bounds, display_id),
+                                 |_window, cx| {
+                                     cx.new(|_| GpuixView::new(tree, callback, title, selection))
+                                 },
+@@ -1302,6 +1425,33 @@ impl GpuixRenderer {
+         ))
+     }
+ 
++    /// Where the window is and how it is displayed, in logical pixels.
++    ///
++    /// Client State persists this so the next run can reopen the window at the
++    /// same origin, size, display and maximized state.
++    #[napi]
++    pub fn get_window_placement(&self) -> Result<WindowPlacement> {
++        #[cfg(target_os = "macos")]
++        return update_window(|_view, window, cx| window_placement(window, cx));
++
++        #[cfg(any(target_os = "windows", target_os = "linux", target_os = "freebsd"))]
++        {
++            let (response, receiver) = sync_channel(1);
++            self.send_ui_command(UiCommand::GetWindowPlacement { response })?;
++            return recv_ui_response(receiver, "the window placement query");
++        }
++
++        #[cfg(not(any(
++            target_os = "macos",
++            target_os = "windows",
++            target_os = "linux",
++            target_os = "freebsd"
++        )))]
++        Err(Error::from_reason(
++            "The production GPUIX renderer does not support this operating system",
++        ))
++    }
++
+     #[napi]
+     pub fn get_window_insets(&self) -> Result<WindowInsets> {
+         #[cfg(target_os = "macos")]
+@@ -5379,6 +5529,47 @@ pub struct WindowSize {
+     pub height: f64,
+ }
+ 
++/// A display's frame in logical pixels.
++#[derive(Debug, Clone)]
++#[cfg_attr(not(all(target_arch = "wasm32", target_os = "unknown")), napi(object))]
++pub struct DisplayBounds {
++    pub x: f64,
++    pub y: f64,
++    pub width: f64,
++    pub height: f64,
++}
++
++/// The display recorded in `WindowOptions`; `bounds` is optional because a
++/// caller that only needs to re-identify the display can send the uuid alone.
++#[derive(Debug, Clone)]
++#[cfg_attr(not(all(target_arch = "wasm32", target_os = "unknown")), napi(object))]
++pub struct WindowOptionsDisplay {
++    pub uuid: Option<String>,
++    pub bounds: Option<DisplayBounds>,
++}
++
++/// The display a window is on, as reported by `getWindowPlacement`.
++#[derive(Debug, Clone)]
++#[cfg_attr(not(all(target_arch = "wasm32", target_os = "unknown")), napi(object))]
++pub struct WindowPlacementDisplay {
++    /// Stable across restarts when the platform can provide one.
++    pub uuid: Option<String>,
++    pub bounds: DisplayBounds,
++}
++
++/// The window's restore geometry and state, for Client State.
++#[derive(Debug, Clone)]
++#[cfg_attr(not(all(target_arch = "wasm32", target_os = "unknown")), napi(object))]
++pub struct WindowPlacement {
++    pub x: f64,
++    pub y: f64,
++    pub width: f64,
++    pub height: f64,
++    pub maximized: bool,
++    pub fullscreen: bool,
++    pub display: Option<WindowPlacementDisplay>,
++}
++
+ #[derive(Debug, Clone, Default)]
+ #[cfg_attr(not(all(target_arch = "wasm32", target_os = "unknown")), napi(object))]
+ pub struct EdgeInsets {
+@@ -5477,6 +5668,15 @@ pub struct WindowOptions {
+     pub app_name: Option<String>,
+     pub width: Option<f64>,
+     pub height: Option<f64>,
++    /// Window origin in logical pixels. Used only together with `y`; the display
++    /// is chosen by `display.uuid` first, else by the display containing the
++    /// window centre, else the primary display.
++    pub x: Option<f64>,
++    pub y: Option<f64>,
++    /// The display the window last ran on, so a restore can find it again.
++    pub display: Option<WindowOptionsDisplay>,
++    /// Open the window maximized. `bounds` stays the windowed restore size.
++    pub maximized: Option<bool>,
+     pub min_width: Option<f64>,
+     pub min_height: Option<f64>,
+     pub resizable: Option<bool>,
+@@ -5505,6 +5705,10 @@ impl Default for WindowOptions {
+             app_name: None,
+             width: Some(800.0),
+             height: Some(600.0),
++            x: None,
++            y: None,
++            display: None,
++            maximized: None,
+             min_width: None,
+             min_height: None,
+             resizable: Some(true),
+@@ -5523,6 +5727,7 @@ impl Default for WindowOptions {
+ fn to_gpui_window_options(
+     options: &WindowOptions,
+     bounds: gpui::Bounds<gpui::Pixels>,
++    display_id: Option<gpui::DisplayId>,
+ ) -> gpui::WindowOptions {
+     let title = options.title.clone().unwrap_or_else(|| "GPUIX".to_string());
+     let titlebar_transparent = options.titlebar_transparent.unwrap_or(false);
+@@ -5545,11 +5750,14 @@ fn to_gpui_window_options(
+     };
+     let window_bounds = if options.fullscreen.unwrap_or(false) {
+         gpui::WindowBounds::Fullscreen(bounds)
++    } else if options.maximized.unwrap_or(false) {
++        gpui::WindowBounds::Maximized(bounds)
+     } else {
+         gpui::WindowBounds::Windowed(bounds)
+     };
+     gpui::WindowOptions {
+         window_bounds: Some(window_bounds),
++        display_id,
+         titlebar: Some(gpui::TitlebarOptions {
+             title: Some(title.into()),
+             appears_transparent: titlebar_transparent,
+@@ -5910,7 +6118,32 @@ mod window_options_tests {
+             origin: gpui::point(gpui::px(0.0), gpui::px(0.0)),
+             size: gpui::size(gpui::px(800.0), gpui::px(600.0)),
+         };
+-        to_gpui_window_options(&options, bounds)
++        to_gpui_window_options(&options, bounds, None)
++    }
++
++    #[test]
++    fn maximized_opens_a_maximized_window() {
++        let gpui_options = mapped(WindowOptions {
++            maximized: Some(true),
++            ..WindowOptions::default()
++        });
++        assert!(matches!(
++            gpui_options.window_bounds,
++            Some(gpui::WindowBounds::Maximized(_))
++        ));
++    }
++
++    #[test]
++    fn fullscreen_wins_over_maximized() {
++        let gpui_options = mapped(WindowOptions {
++            maximized: Some(true),
++            fullscreen: Some(true),
++            ..WindowOptions::default()
++        });
++        assert!(matches!(
++            gpui_options.window_bounds,
++            Some(gpui::WindowBounds::Fullscreen(_))
++        ));
+     }
+ 
+     #[test]
+diff --git a/packages/react/src/types/host.ts b/packages/react/src/types/host.ts
+index 6b72d34..ed8a5d9 100644
+--- a/packages/react/src/types/host.ts
++++ b/packages/react/src/types/host.ts
+@@ -615,6 +615,8 @@ export interface NativeRenderer {
+ 
+   // ── Window API ─────────────────────────────────────────────────
+   getWindowSize?(): { width: number; height: number }
++  /** Restore geometry and state for Client State (window placement). */
++  getWindowPlacement?(): NativeWindowPlacement
+   getWindowInsets?(): NativeWindowInsets
+   setWindowTitle?(title: string): void
+   /** Bring the window forward and focus it. Reveals a `show: false` window. */
+@@ -655,6 +657,28 @@ export interface NativeWindowInsets {
+   effective: EdgeInsets
+ }
+ 
++/** A display's frame in logical pixels. */
++export interface NativeDisplayBounds {
++  x: number
++  y: number
++  width: number
++  height: number
++}
++
++/** The window's restore geometry and state, as `getWindowPlacement` reports it. */
++export interface NativeWindowPlacement {
++  x: number
++  y: number
++  width: number
++  height: number
++  maximized: boolean
++  fullscreen: boolean
++  display?: {
++    uuid?: string
++    bounds: NativeDisplayBounds
++  }
++}
++
+ export interface DebugFrameOverlayStats {
+   currentMs?: number
+   p90Ms?: number

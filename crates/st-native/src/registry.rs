@@ -15,7 +15,7 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use st_client_core::{DataPlaneHandle, Selection, SelectionConfig};
+use st_client_core::{DataPlaneHandle, ReplicaCounters, Selection, SelectionConfig};
 use st_proto::{Modes, SurfaceId};
 
 use crate::stats::FrameStats;
@@ -48,12 +48,31 @@ pub struct StatsSnapshot {
     pub cache_hit_rate: f64,
     /// Entries currently in the shaped-run cache.
     pub cache_len: usize,
+    /// Deltas discarded after a Gap (handover A.2 item 5).
+    pub gaps: u64,
+    /// Snapshot requests sent while attached (Resyncs).
+    pub resyncs: u64,
+    /// Snapshots applied to the Surface's Replica.
+    pub snapshots: u64,
+    /// Approximate bytes held by the Surface's Replica (B.2 step 2).
+    pub replica_bytes: u64,
+    /// Replicas released with `forget` on this connection (B.2 step 3).
+    pub forgotten: u64,
 }
 
 impl StatsSnapshot {
-    /// Flattens the live counters.
+    /// Flattens the live counters, the Replica's protocol counters and its
+    /// approximate size.
     #[must_use]
-    pub fn of(stats: &FrameStats, cache_hits: u64, cache_misses: u64, cache_len: usize) -> Self {
+    pub fn of(
+        stats: &FrameStats,
+        cache_hits: u64,
+        cache_misses: u64,
+        cache_len: usize,
+        counters: ReplicaCounters,
+        replica_bytes: u64,
+        forgotten: u64,
+    ) -> Self {
         let total = cache_hits + cache_misses;
         Self {
             frames: stats.frames(),
@@ -72,6 +91,11 @@ impl StatsSnapshot {
                 cache_hits as f64 / total as f64
             },
             cache_len,
+            gaps: counters.gaps,
+            resyncs: counters.resyncs,
+            snapshots: counters.snapshots,
+            replica_bytes,
+            forgotten,
         }
     }
 
@@ -91,6 +115,11 @@ impl StatsSnapshot {
             "runCacheMisses": self.cache_misses,
             "runCacheHitRate": round3(self.cache_hit_rate * 1000.0) / 1000.0,
             "runCacheLen": self.cache_len,
+            "gaps": self.gaps,
+            "resyncs": self.resyncs,
+            "snapshots": self.snapshots,
+            "replicaBytes": self.replica_bytes,
+            "forgotten": self.forgotten,
         })
     }
 }
@@ -373,7 +402,19 @@ mod tests {
         stats.shaped_runs = 7;
         stats.end_frame(std::time::Duration::from_micros(4200));
         let snapshot = GridSnapshot {
-            stats: StatsSnapshot::of(&stats, 30, 10, 25),
+            stats: StatsSnapshot::of(
+                &stats,
+                30,
+                10,
+                25,
+                ReplicaCounters {
+                    gaps: 3,
+                    resyncs: 1,
+                    snapshots: 4,
+                },
+                4_096,
+                2,
+            ),
             ..snapshot(1, 1)
         };
         let json = snapshot.read("stats").unwrap();
@@ -384,6 +425,14 @@ mod tests {
         assert_eq!(json["runCacheMisses"], 10);
         assert!((json["runCacheHitRate"].as_f64().unwrap() - 0.75).abs() < 0.001);
         assert_eq!(json["runCacheLen"], 25);
+        // The Replica's protocol counters ride along (A.2 item 5).
+        assert_eq!(json["gaps"], 3);
+        assert_eq!(json["resyncs"], 1);
+        assert_eq!(json["snapshots"], 4);
+        // Its approximate size and the connection's released-Replica count
+        // ride along too (B.2 steps 2–3).
+        assert_eq!(json["replicaBytes"], 4_096);
+        assert_eq!(json["forgotten"], 2);
     }
 
     #[test]

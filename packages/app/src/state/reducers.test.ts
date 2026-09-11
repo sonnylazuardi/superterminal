@@ -643,6 +643,59 @@ describe('applyUiAction', () => {
     expect(applyUiAction(s, { type: 'window.resize', width: 1200, height: 800 })).toBe(s);
   });
 
+  test('a sampled placement keeps the viewport size and adds position and state', () => {
+    let s = applyUiAction(seeded(), { type: 'window.resize', width: 1200, height: 800 });
+    s = applyUiAction(s, {
+      type: 'ui/window-placed',
+      placement: {
+        width: 1194,
+        height: 792,
+        x: -1920,
+        y: 120,
+        maximized: true,
+        display: { uuid: 'U', bounds: { x: -1920, y: 0, width: 1920, height: 1080 } },
+      },
+    });
+    expect(s.ui.window).toEqual({
+      width: 1200,
+      height: 800,
+      x: -1920,
+      y: 120,
+      maximized: true,
+      display: { uuid: 'U', bounds: { x: -1920, y: 0, width: 1920, height: 1080 } },
+    });
+    // Same placement again: identity, so the persister stays quiet.
+    expect(
+      applyUiAction(s, {
+        type: 'ui/window-placed',
+        placement: {
+          width: 1194,
+          height: 792,
+          x: -1920,
+          y: 120,
+          maximized: true,
+          display: { uuid: 'U', bounds: { x: -1920, y: 0, width: 1920, height: 1080 } },
+        },
+      }),
+    ).toBe(s);
+    // Un-maximizing keeps the origin; a resize keeps everything.
+    const unmaximized = applyUiAction(s, {
+      type: 'ui/window-placed',
+      placement: { width: 1200, height: 800, x: -1920, y: 120, maximized: false },
+    });
+    expect(unmaximized.ui.window.maximized).toBe(false);
+    expect(unmaximized.ui.window.x).toBe(-1920);
+    const resized = applyUiAction(unmaximized, { type: 'window.resize', width: 1300, height: 900 });
+    expect(resized.ui.window).toEqual({
+      width: 1300,
+      height: 900,
+      x: -1920,
+      y: 120,
+      maximized: false,
+      display: { uuid: 'U', bounds: { x: -1920, y: 0, width: 1920, height: 1080 } },
+    });
+  });
+
   test('toasts push with increasing ids and dismiss by id', () => {
     let s = applyUiAction(seeded(), { type: 'toast.push', text: 'copied' });
     s = applyUiAction(s, { type: 'toast.push', text: 'boom', kind: 'error' });

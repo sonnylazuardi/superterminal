@@ -17,6 +17,9 @@
  */
 
 import './native/preload.js';
+// B.2.1: `DEBUG=st:mem` samples process.memoryUsage() + replicated bytes every
+// 30 s. Must come after the preload so the first sample sees the native path.
+import './debug/mem-log.js';
 import { render, type Root } from '@gpuix/react';
 import { bootstrap, connect } from './bootstrap.js';
 import { parseArgv, USAGE } from './cli/argv.js';
@@ -26,6 +29,7 @@ import {
   type ClientState,
   type ClientStatePersister,
 } from './state/client-state.js';
+import { readWindowPlacement, type WindowPlacementSource } from './state/window-placement.js';
 import type { WorkspaceState } from './state/types.js';
 import type { WorkspaceStore } from './state/workspace-store.js';
 import { App } from './ui/App.js';
@@ -104,15 +108,16 @@ export function main(argvInput: string[] = Bun.argv.slice(2)): void {
     : null;
   globalThis.__stRoot = { root, services, persister };
 
-  // Dev-only scripted input (util/drive.ts); the renderer lives in gpuix's
-  // render slot on globalThis.
+  // The renderer lives in gpuix's render slot on globalThis; both the
+  // placement sampler and the dev driver read it from there.
+  const renderHost = (globalThis as Record<string, unknown>)['__gpuixRenderHost'] as
+    | { renderer?: WindowPlacementSource & Parameters<typeof startDriveFile>[1] }
+    | undefined;
+  trackWindowPlacement(boot.store, renderHost?.renderer ?? null);
+
+  // Dev-only scripted input (util/drive.ts).
   const drivePath = process.env['SUPERTERMINAL_DRIVE'];
-  if (drivePath) {
-    const slot = (globalThis as Record<string, unknown>)['__gpuixRenderHost'] as
-      | { renderer?: Parameters<typeof startDriveFile>[1] }
-      | undefined;
-    if (slot?.renderer) startDriveFile(drivePath, slot.renderer);
-  }
+  if (drivePath && renderHost?.renderer) startDriveFile(drivePath, renderHost.renderer);
 
   // Connecting is deliberately not awaited: the window must appear even when
   // the server is broken, with a banner explaining why (05 §1 step 4).
@@ -121,13 +126,45 @@ export function main(argvInput: string[] = Bun.argv.slice(2)): void {
 
 /** What the store knows that is worth remembering (ADR 0008). */
 export function clientStateOf(state: WorkspaceState): ClientState {
-  const { width, height } = state.ui.window;
+  const window = state.ui.window;
   return {
-    window: width > 0 && height > 0 ? { width, height } : null,
+    // A zero size is "not measured yet"; the caller keeps the placement that
+    // was loaded from disk instead of erasing it (see `persistClientState`).
+    window: window.width > 0 && window.height > 0 ? window : null,
     verticalTabs: state.ui.verticalTabs,
     sidebarWidth: state.ui.sidebarWidth,
     fontZoom: state.ui.fontZoom,
   };
+}
+
+/** The placement is re-read at this rate when the window neither resizes nor moves. */
+export const WINDOW_PLACEMENT_SAMPLE_MS = 2_000;
+
+/**
+ * Sample the Window Placement (CONTEXT.md, ADR 0008): after every resize
+ * action and every 2 s. `getWindowPlacement` is a round trip to the UI thread,
+ * so it is not polled per frame, and `ui/window-placed` returns the previous
+ * state when nothing changed.
+ */
+export function trackWindowPlacement(
+  store: WorkspaceStore,
+  renderer: WindowPlacementSource | null,
+): void {
+  const sample = (): void => {
+    const placement = readWindowPlacement(renderer);
+    if (placement) store.dispatch({ type: 'ui/window-placed', placement });
+  };
+  let lastWindow = store.getState().ui.window;
+  store.subscribe(() => {
+    const next = store.getState().ui.window;
+    // The interval catches moves; only a changed viewport size warrants an
+    // immediate read, because that is what a resize action writes.
+    if (next.width === lastWindow.width && next.height === lastWindow.height) return;
+    lastWindow = next;
+    sample();
+  });
+  sample();
+  setInterval(sample, WINDOW_PLACEMENT_SAMPLE_MS);
 }
 
 /**

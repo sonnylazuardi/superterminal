@@ -71,6 +71,73 @@ describe('parseClientState', () => {
     }
   });
 
+  test('a v1 file (size only) loads unchanged', () => {
+    expect(parseClientState('{"version":1,"window":{"width":800,"height":600}}')).toEqual({
+      state: state({ width: 800, height: 600 }, null),
+      warnings: [],
+    });
+  });
+
+  test('a bad x drops the origin but keeps the size', () => {
+    const { state: parsed, warnings } = parseClientState(
+      '{"window":{"width":800,"height":600,"x":"left","y":100,"maximized":true}}',
+    );
+    expect(parsed.window).toEqual({ width: 800, height: 600, maximized: true });
+    expect(warnings).toEqual(['[superterminal] client state: remembered window position ignored']);
+    // A lone x is not a placement either.
+    expect(parseClientState('{"window":{"width":800,"height":600,"x":10}}').state.window).toEqual({
+      width: 800,
+      height: 600,
+    });
+  });
+
+  test('a placement round-trips and false maximized is omitted from the file', () => {
+    const placement = state(
+      {
+        width: 1017,
+        height: 655,
+        x: -1920,
+        y: 120.5,
+        maximized: true,
+        display: { uuid: 'DISPLAY-UUID', bounds: { x: -1920, y: 0, width: 1920, height: 1080 } },
+      },
+      true,
+    );
+    expect(parseClientState(serializeClientState(placement))).toEqual({
+      state: placement,
+      warnings: [],
+    });
+    const unmaximized = state({ width: 800, height: 600, maximized: false }, null);
+    expect(JSON.parse(serializeClientState(unmaximized)).window).toEqual({
+      width: 800,
+      height: 600,
+    });
+  });
+
+  test('a display with only a uuid still round-trips', () => {
+    const placement = state(
+      { width: 800, height: 600, x: 10, y: 10, display: { uuid: 'U' } },
+      null,
+    );
+    expect(parseClientState(serializeClientState(placement))).toEqual({
+      state: placement,
+      warnings: [],
+    });
+  });
+
+  test('a corrupt display is ignored; the placement survives', () => {
+    const { state: parsed, warnings } = parseClientState(
+      '{"window":{"width":800,"height":600,"display":{"uuid":7,"bounds":{"width":-1}}}}',
+    );
+    expect(parsed.window).toEqual({ width: 800, height: 600 });
+    expect(warnings).toEqual(['[superterminal] client state: remembered display ignored']);
+    const goodUuid = parseClientState(
+      '{"window":{"width":800,"height":600,"display":{"uuid":"U","bounds":{"width":-1}}}}',
+    );
+    expect(goodUuid.state.window).toEqual({ width: 800, height: 600, display: { uuid: 'U' } });
+    expect(goodUuid.warnings).toEqual([]);
+  });
+
   test('font zoom round-trips, clamps, and is omitted from the file at zero', () => {
     expect(parseClientState('{"fontZoom":2}').state.fontZoom).toBe(2);
     expect(parseClientState('{"fontZoom":-3.4}').state.fontZoom).toBe(-3);

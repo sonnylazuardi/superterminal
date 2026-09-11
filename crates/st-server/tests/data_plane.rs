@@ -338,6 +338,64 @@ async fn an_active_attach_snapshots_the_shell_output() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_duplicate_attach_is_a_resync_and_honours_the_new_mode() {
+    let harness = Harness::start();
+    let surface = SurfaceId(1);
+    let slot = harness.engine_surface(surface, 40, 6);
+
+    let mut client = harness.connect().await;
+    client.handshake().await;
+    client.attach(surface, AttachMode::Active).await;
+    let first_seq = client
+        .wait_for(|msg| match msg {
+            DataMsg::Snapshot(snapshot) => Some(snapshot.seq),
+            _ => None,
+        })
+        .await;
+    client
+        .send(&DataMsg::Ack(Ack {
+            surface_id: surface,
+            seq: first_seq,
+        }))
+        .await;
+
+    // The same Client Attaches again: a Resync, not a DataError (ADR 0011).
+    client.attach(surface, AttachMode::Active).await;
+    let resync_seq = client
+        .wait_for(|msg| match msg {
+            DataMsg::Snapshot(snapshot) => Some(snapshot.seq),
+            DataMsg::DataError(err) => panic!("a repeated Attach must not error: {err:?}"),
+            _ => None,
+        })
+        .await;
+    assert!(resync_seq > first_seq, "the Resync is a fresh frame");
+
+    // Switching to Passive on the next Attach is honoured: the Server strips
+    // the rows from the Snapshot (Q44).
+    client.attach(surface, AttachMode::Passive).await;
+    let passive = client
+        .wait_for(|msg| match msg {
+            DataMsg::Snapshot(snapshot) => Some(snapshot.clone()),
+            DataMsg::DataError(err) => panic!("a repeated Attach must not error: {err:?}"),
+            _ => None,
+        })
+        .await;
+    assert!(passive.grid.is_empty(), "Q44: a Passive Resync has no rows");
+    assert!(passive.styles.is_empty());
+
+    let mode = {
+        let surface = slot.lock();
+        let id = surface
+            .publisher()
+            .clients()
+            .next()
+            .expect("the Client is still attached");
+        surface.publisher().subscription(id).unwrap().mode()
+    };
+    assert_eq!(mode, AttachMode::Passive, "the new mode is stored");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_delta_carries_the_dirty_rows_and_chains_on_since_seq() {
     let harness = Harness::start();
     let surface = SurfaceId(1);

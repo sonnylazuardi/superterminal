@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { DEFAULT_CONFIG, type Config, type WindowBackground } from '../config/schema.js';
+import type { WindowPlacement } from '../state/client-state.js';
 import { buildTerminalTheme, tokensFor, glassTokens, opaqueTokens } from '../theme/tokens.js';
 import { detectPlatform } from './detect.js';
 import {
@@ -7,6 +8,7 @@ import {
   resolveBackground,
   resolveInitialSize,
   resolveLinuxBackground,
+  resolveWindowOrigin,
   titleBarPadding,
 } from './window-options.js';
 
@@ -34,6 +36,11 @@ const x11 = detectPlatform({
   execPath: '/usr/bin/bun',
   procVersion: 'Linux 6.6.0-generic',
 });
+const windows = detectPlatform({
+  platform: 'win32',
+  env: {},
+  execPath: 'C:\\Users\\x\\superterminal.exe',
+});
 
 describe('resolveLinuxBackground', () => {
   test('auto: WSLg is opaque, Wayland transparent, X11 opaque', () => {
@@ -50,6 +57,17 @@ describe('resolveLinuxBackground', () => {
   test('blurred degrades to transparent on Linux', () => {
     expect(resolveLinuxBackground('blurred', wayland)).toBe('transparent');
     expect(resolveLinuxBackground('blurred', wsl)).toBe('transparent');
+  });
+});
+
+describe('resolveBackground on Windows', () => {
+  test('auto and blurred are opaque; only explicit transparent stays transparent', () => {
+    expect(resolveBackground(withBackground('auto'), windows)).toBe('opaque');
+    expect(resolveBackground(withBackground('blurred'), windows)).toBe('opaque');
+    expect(resolveBackground(withBackground('opaque'), windows)).toBe('opaque');
+    expect(resolveBackground(withBackground('transparent'), windows)).toBe('transparent');
+    // Not the macOS answer even though `auto` maps to blur there.
+    expect(resolveBackground(withBackground('auto'), mac)).toBe('blurred');
   });
 });
 
@@ -110,6 +128,65 @@ describe('buildWindowOptions', () => {
     // Config needs both dimensions; one alone is not a size.
     const halfConfig: Config = { ...DEFAULT_CONFIG, window: { ...DEFAULT_CONFIG.window, width: 1400 } };
     expect(resolveInitialSize(halfConfig, null)).toBeNull();
+  });
+
+  test('a remembered placement adds origin, display and maximized', () => {
+    const placement: WindowPlacement = {
+      width: 1017,
+      height: 655,
+      x: 1920,
+      y: 120,
+      maximized: true,
+      display: { uuid: 'U', bounds: { x: 1920, y: 0, width: 1920, height: 1080 } },
+    };
+    expect(buildWindowOptions(DEFAULT_CONFIG, windows, placement)).toMatchObject({
+      width: 1017,
+      height: 655,
+      x: 1920,
+      y: 120,
+      maximized: true,
+      display: { uuid: 'U', bounds: { x: 1920, y: 0, width: 1920, height: 1080 } },
+    });
+  });
+
+  test('an origin whose remembered display no longer contains the centre is dropped', () => {
+    const stale: WindowPlacement = {
+      width: 1017,
+      height: 655,
+      x: 4000,
+      y: 4000,
+      display: { bounds: { x: 0, y: 0, width: 1920, height: 1080 } },
+    };
+    expect(resolveWindowOrigin(stale)).toBeNull();
+    const opts = buildWindowOptions(DEFAULT_CONFIG, windows, stale);
+    expect(opts.x).toBeUndefined();
+    expect(opts.y).toBeUndefined();
+    expect(opts).toMatchObject({ width: 1017, height: 655 });
+  });
+
+  test('a uuid keeps the origin even when the remembered bounds moved', () => {
+    const moved: WindowPlacement = {
+      width: 1017,
+      height: 655,
+      x: 3000,
+      y: 4000,
+      display: { uuid: 'U', bounds: { x: 0, y: 0, width: 1920, height: 1080 } },
+    };
+    expect(resolveWindowOrigin(moved)).toEqual({ x: 3000, y: 4000 });
+    expect(buildWindowOptions(DEFAULT_CONFIG, windows, moved)).toMatchObject({ x: 3000, y: 4000 });
+  });
+
+  test('maximized is passed through only when true', () => {
+    expect(
+      buildWindowOptions(DEFAULT_CONFIG, windows, { width: 800, height: 600 }).maximized,
+    ).toBeUndefined();
+    expect(
+      buildWindowOptions(DEFAULT_CONFIG, windows, {
+        width: 800,
+        height: 600,
+        maximized: false,
+      }).maximized,
+    ).toBeUndefined();
   });
 
   test('title bar padding is macOS-only', () => {

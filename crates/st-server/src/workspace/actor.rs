@@ -33,7 +33,7 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 use crate::metrics::{Metrics, Uptime};
 use crate::persist::{self, PersistedLayout, PersistedSurface, Persister};
 use crate::workspace::model::{Surface, SurfaceStatus, Workspace};
-use crate::workspace::spawn::{SpawnSpec, SurfaceSpawner};
+use crate::workspace::spawn::{ScrollbackUsage, SpawnSpec, SurfaceSpawner};
 
 /// Identifies one connection, so the actor can suppress the echo of a
 /// view-only change back to the connection that made it (`02-protocol.md`
@@ -673,11 +673,12 @@ impl WorkspaceActor {
             data_clients: u32::try_from(self.metrics.data_clients.get()).unwrap_or(u32::MAX),
             workspace_file: self.persist.path().display().to_string(),
         };
-        let mut value = serde_json::to_value(status).unwrap_or_else(|_| json!({}));
-        if let Some(object) = value.as_object_mut() {
-            object.insert("metrics".to_string(), self.metrics.to_json());
-        }
-        value
+        let value = serde_json::to_value(status).unwrap_or_else(|_| json!({}));
+        with_status_extras(
+            value,
+            self.metrics.to_json(),
+            &self.spawner.scrollback_usage(),
+        )
     }
 
     // ------------------------------------------------------------ surfaces
@@ -982,6 +983,25 @@ fn inject_pids(value: &mut Value, ws: &Workspace) {
 fn value<T: serde::Serialize>(result: T) -> Result<Value, ErrorBody> {
     serde_json::to_value(result)
         .map_err(|e| ErrorBody::new(ErrorCode::Internal, format!("cannot encode result: {e}")))
+}
+
+/// Splices the optional `metrics` and per-Surface `scrollback` keys into a
+/// `server.status` result.
+///
+/// `ServerStatus` is frozen in `st-proto`; both keys are additive JSON beside
+/// its named fields (`02-protocol.md` §10), which is how `st status` reads
+/// them without a protocol change. The spawner owns the engines, so a spawner
+/// without them reports no scrollback — `st status` treats the empty array as
+/// "not measured" and prints nothing.
+fn with_status_extras(mut value: Value, metrics: Value, usage: &[ScrollbackUsage]) -> Value {
+    if let Some(object) = value.as_object_mut() {
+        object.insert("metrics".to_string(), metrics);
+        object.insert(
+            "scrollback".to_string(),
+            serde_json::to_value(usage).unwrap_or_else(|_| json!([])),
+        );
+    }
+    value
 }
 
 /// Re-seeds a Workspace from a loaded `workspace.json` (`03-server.md` §2.6).
@@ -1324,5 +1344,29 @@ mod tests {
         ws.seed_default_session(SurfaceId(1));
         let value = snapshot_value(&ws);
         assert_eq!(value["surfaces"][0]["pid"], 4242);
+    }
+
+    #[test]
+    fn the_status_result_carries_metrics_and_scrollback() {
+        let usage = [ScrollbackUsage {
+            surface: SurfaceId(9),
+            scrollback_rows: 12,
+            scrollback_bytes: 2_304,
+        }];
+        let value = with_status_extras(
+            json!({"pid": 1, "surfaces": 1}),
+            json!({"revisions": 3}),
+            &usage,
+        );
+        assert_eq!(value["pid"], 1);
+        assert_eq!(value["metrics"]["revisions"], 3);
+        assert_eq!(value["scrollback"][0]["surface"], 9);
+        assert_eq!(value["scrollback"][0]["scrollback_rows"], 12);
+        assert_eq!(value["scrollback"][0]["scrollback_bytes"], 2_304);
+
+        // A spawner without engines (NullSpawner) reports an empty array, not
+        // a missing key: `st status` then prints nothing about scrollback.
+        let empty = with_status_extras(json!({}), json!({}), &[]);
+        assert_eq!(empty["scrollback"], json!([]));
     }
 }

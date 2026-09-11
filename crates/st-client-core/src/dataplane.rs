@@ -50,12 +50,16 @@
 //! When [`Replica::apply_delta`] reports a [`Gap`], the core immediately
 //! queues an `Attach { want_snapshot: true, known_seq: 0 }` for that Surface
 //! and emits [`DataPlaneEvent::Gap`]. The delta is dropped, never buffered.
+//! The Replica counts the Gap, the request counts a resync, and the healing
+//! Snapshot counts a snapshot, all read back through
+//! [`DataPlaneHandle::counters`]. A Gap still unhealed after 2 s is logged at
+//! `warn` with its Surface and sequence numbers.
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
 use st_proto::{
@@ -65,13 +69,30 @@ use st_proto::{
     PROTO_VERSION,
 };
 
-use crate::replica::{Gap, Replica, ReplicaConfig};
+use crate::replica::{Gap, Replica, ReplicaConfig, ReplicaCounters};
 
 /// Called when a Replica changes or an event is queued, from the I/O thread.
 ///
 /// Must be cheap and must not block: the GPUI layer only schedules a repaint
 /// (`AsyncApp::update` → `cx.notify()`, §5).
 pub type WakeFn = Box<dyn Fn() + Send + Sync>;
+
+/// How long a Gap may stay unhealed before the watchdog logs it (A.2 item 5).
+///
+/// There is no timer thread: [`DataPlaneCore::feed`] and
+/// [`DataPlaneHandle::take_events`] check the clock whenever either side of
+/// the connection is next touched, so the warning can lag the 2 s mark until
+/// the next frame or inbound frame.
+const GAP_WATCHDOG: Duration = Duration::from_secs(2);
+
+/// How many out-of-band events [`Shared`] keeps for the renderer (B.2 step 4).
+///
+/// Replica state is the source of truth; events are only wake-ups. Windows
+/// does not run frames while the window is minimised, so a queue the renderer
+/// never drains must not grow without bound. When full, the oldest event that
+/// is not connection lifecycle state is dropped, and a run of bells on one
+/// Surface coalesces into one.
+const EVENT_QUEUE_CAP: usize = 1024;
 
 /// Something out-of-band the renderer or the app layer should know about.
 ///
@@ -180,6 +201,16 @@ struct ReplicaSlot {
     pending_paint: AtomicBool,
 }
 
+/// A Gap the client is watching for a healing Snapshot (A.2 item 5).
+#[derive(Debug, Clone, Copy)]
+struct PendingGap {
+    /// When the Gap was detected.
+    detected_at: Instant,
+    /// The offending Delta: the Surface, the seq held and the `since_seq` it
+    /// claimed to build on.
+    gap: Gap,
+}
+
 /// The write half of a live connection, plus a way to unblock the reader.
 struct Conn {
     write: Box<dyn Write + Send>,
@@ -190,8 +221,14 @@ struct Conn {
 pub struct Shared {
     replicas: Mutex<HashMap<SurfaceId, ReplicaSlot>>,
     attachments: Mutex<HashMap<SurfaceId, AttachMode>>,
+    /// Gaps awaiting a healing Snapshot, for the watchdog (A.2 item 5).
+    pending_gaps: Mutex<HashMap<SurfaceId, PendingGap>>,
     conn: Mutex<Option<Conn>>,
     events: Mutex<Vec<DataPlaneEvent>>,
+    /// How many Replicas have been released with
+    /// [`DataPlaneHandle::forget`] (B.2 step 3). Connection-wide because the
+    /// Replica's own counters die with it.
+    forgotten: AtomicU64,
     connected: AtomicBool,
     shutdown: AtomicBool,
     wake: WakeFn,
@@ -215,8 +252,10 @@ impl Shared {
         Arc::new(Self {
             replicas: Mutex::new(HashMap::new()),
             attachments: Mutex::new(HashMap::new()),
+            pending_gaps: Mutex::new(HashMap::new()),
             conn: Mutex::new(None),
             events: Mutex::new(Vec::new()),
+            forgotten: AtomicU64::new(0),
             connected: AtomicBool::new(false),
             shutdown: AtomicBool::new(false),
             wake,
@@ -224,9 +263,43 @@ impl Shared {
         })
     }
 
-    /// Queues an event and wakes the renderer.
+    /// Queues an event and wakes the renderer, keeping the queue bounded
+    /// (B.2 step 4).
+    ///
+    /// Consecutive [`DataPlaneEvent::Bell`]s for one Surface coalesce: one
+    /// wake-up already covers them. At [`EVENT_QUEUE_CAP`] the oldest event
+    /// that is not connection lifecycle state is dropped, because a Replica
+    /// can reconstruct it; lifecycle events are kept unless every queued event
+    /// is one, in which case the newest wins.
     fn push_event(&self, event: DataPlaneEvent) {
-        self.events.lock().push(event);
+        let mut push = true;
+        {
+            let mut events = self.events.lock();
+            if matches!(
+                (&event, events.last()),
+                (DataPlaneEvent::Bell(new), Some(DataPlaneEvent::Bell(last))) if new == last
+            ) {
+                push = false;
+            }
+            if push && events.len() >= EVENT_QUEUE_CAP {
+                match events.iter().position(|queued| !is_lifecycle_event(queued)) {
+                    Some(index) => {
+                        events.remove(index);
+                    }
+                    // Every queued event is connection state and the new one
+                    // is too: keep the newest, lose the oldest.
+                    None if is_lifecycle_event(&event) => {
+                        events.remove(0);
+                    }
+                    // Every queued event is connection state and the new one
+                    // is a wake-up: dropping the wake-up loses nothing.
+                    None => push = false,
+                }
+            }
+            if push {
+                events.push(event);
+            }
+        }
         (self.wake)();
     }
 
@@ -259,6 +332,71 @@ impl Shared {
         *self.conn.lock() = conn;
         self.connected.store(connected, Ordering::Release);
     }
+
+    /// Remembers a Gap so the watchdog can complain if no Snapshot heals it.
+    fn note_gap(&self, gap: Gap) {
+        self.pending_gaps.lock().insert(
+            gap.surface_id,
+            PendingGap {
+                detected_at: Instant::now(),
+                gap,
+            },
+        );
+    }
+
+    /// A Snapshot arrived for `surface_id`; stop watching any Gap there.
+    fn heal_gap(&self, surface_id: SurfaceId) {
+        self.pending_gaps.lock().remove(&surface_id);
+    }
+
+    /// Logs one `warn` per Gap still unhealed after [`GAP_WATCHDOG`] and
+    /// forgets it. Called whenever bytes are fed or the renderer drains
+    /// events; a Gap can therefore warn later than 2 s when the connection
+    /// and the renderer are both idle.
+    fn check_gap_watchdog(&self, now: Instant) {
+        let mut pending = self.pending_gaps.lock();
+        let mut expired = Vec::new();
+        pending.retain(|surface_id, entry| {
+            if now.saturating_duration_since(entry.detected_at) < GAP_WATCHDOG {
+                return true;
+            }
+            expired.push((*surface_id, entry.gap));
+            false
+        });
+        drop(pending);
+        for (surface_id, gap) in expired {
+            tracing::warn!(
+                surface = %surface_id,
+                have = %gap.have,
+                since = %gap.since,
+                got = %gap.got,
+                watchdog_ms = GAP_WATCHDOG.as_millis() as u64,
+                "gap not healed by a Snapshot within the watchdog window"
+            );
+        }
+    }
+
+    /// Runs `f` against a Surface's Replica if it exists. Used for counters
+    /// the Data Plane owns the trigger for (a Resync request).
+    fn with_existing_replica_mut(&self, surface_id: SurfaceId, f: impl FnOnce(&mut Replica)) {
+        let mut replicas = self.replicas.lock();
+        if let Some(slot) = replicas.get_mut(&surface_id) {
+            f(&mut slot.replica);
+        }
+    }
+}
+
+/// Events whose loss would erase state a Replica cannot reconstruct.
+///
+/// [`Shared::push_event`] never drops these while a droppable event is queued.
+fn is_lifecycle_event(event: &DataPlaneEvent) -> bool {
+    matches!(
+        event,
+        DataPlaneEvent::Connected { .. }
+            | DataPlaneEvent::Disconnected { .. }
+            | DataPlaneEvent::Detached { .. }
+            | DataPlaneEvent::Exited { .. }
+    )
 }
 
 // ------------------------------------------------------------------- the core
@@ -326,6 +464,7 @@ impl DataPlaneCore {
                 }
             }
         }
+        self.shared.check_gap_watchdog(Instant::now());
         Ok(())
     }
 
@@ -354,6 +493,7 @@ impl DataPlaneCore {
                     slot.replica.apply_snapshot(&snap);
                     shared.mark_dirty(slot);
                 });
+                self.shared.heal_gap(surface_id);
                 self.auto_ack(surface_id, seq);
             }
             DataMsg::Delta(delta) => {
@@ -369,6 +509,7 @@ impl DataPlaneCore {
                 });
                 if let Some(gap) = gap {
                     tracing::warn!(%gap, "delta gap; requesting a snapshot");
+                    self.shared.note_gap(gap);
                     self.shared.push_event(DataPlaneEvent::Gap(gap));
                     self.request_snapshot(surface_id);
                 } else {
@@ -440,6 +581,9 @@ impl DataPlaneCore {
     }
 
     /// Re-`Attach`es with `want_snapshot: true` after a gap.
+    ///
+    /// Counts a Resync on the Replica before sending, so `stats.resyncs`
+    /// tracks the requests even when the write fails on a dying socket.
     fn request_snapshot(&self, surface_id: SurfaceId) {
         let mode = self
             .shared
@@ -448,6 +592,8 @@ impl DataPlaneCore {
             .get(&surface_id)
             .copied()
             .unwrap_or(AttachMode::Active);
+        self.shared
+            .with_existing_replica_mut(surface_id, Replica::note_resync);
         let attach = DataMsg::Attach(Attach {
             surface_id,
             mode,
@@ -492,6 +638,17 @@ impl DataPlaneHandle {
         self.shared.connected.load(Ordering::Acquire)
     }
 
+    /// `true` while this client believes it is subscribed to `surface_id`.
+    ///
+    /// The attachment set survives a disconnected socket: the I/O thread
+    /// re-sends one `Attach` per entry when it reconnects (`reattach_all`), so
+    /// callers deciding whether to `attach` must consult this, not a local
+    /// flag that a `Disconnected` event cleared (R4).
+    #[must_use]
+    pub fn is_attached(&self, surface_id: SurfaceId) -> bool {
+        self.shared.attachments.lock().contains_key(&surface_id)
+    }
+
     /// Subscribes to a Surface (§4.2, grilling Q44).
     ///
     /// The mode is remembered, so a reconnect re-attaches with it. When the
@@ -517,10 +674,18 @@ impl DataPlaneHandle {
         self.shared.send(&DataMsg::Detach(Detach { surface_id }))
     }
 
-    /// Drops a Surface's Replica entirely, freeing its memory.
+    /// Drops a Surface's Replica entirely, freeing its memory (B.2 step 3).
+    ///
+    /// The removal bumps the connection's
+    /// [`forgotten_count`](Self::forgotten_count), which the `stats` readable
+    /// prop reports; a call for a Surface with no Replica is a no-op and does
+    /// not count.
     pub fn forget(&self, surface_id: SurfaceId) {
         self.shared.attachments.lock().remove(&surface_id);
-        self.shared.replicas.lock().remove(&surface_id);
+        self.shared.pending_gaps.lock().remove(&surface_id);
+        if self.shared.replicas.lock().remove(&surface_id).is_some() {
+            self.shared.forgotten.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     /// Reports the user's View State (selection, scroll offset) for a Surface.
@@ -608,6 +773,14 @@ impl DataPlaneHandle {
         replicas.get(&surface_id).map(|slot| f(&slot.replica))
     }
 
+    /// The protocol counters for a Surface's Replica, all zero when there is
+    /// no Replica (never attached, or forgotten).
+    #[must_use]
+    pub fn counters(&self, surface_id: SurfaceId) -> ReplicaCounters {
+        self.with_replica(surface_id, Replica::counters)
+            .unwrap_or_default()
+    }
+
     /// Runs `f` against a Surface's Replica mutably, creating it if needed.
     ///
     /// For local-only edits the server does not own, e.g. trimming a hidden
@@ -623,6 +796,24 @@ impl DataPlaneHandle {
             pending_paint: AtomicBool::new(false),
         });
         f(&mut slot.replica)
+    }
+
+    /// Trims a Surface's cached history to at most `keep` rows, keeping the
+    /// Replica itself (B.2 step 3).
+    ///
+    /// A Pane that unmounts keeps its screen but releases its scrollback; the
+    /// dropped rows are refetchable on demand. Unlike
+    /// [`forget`](Self::forget) this is a no-op when no Replica exists.
+    pub fn shrink_history_to(&self, surface_id: SurfaceId, keep: usize) {
+        self.shared
+            .with_existing_replica_mut(surface_id, |replica| replica.shrink_history_to(keep));
+    }
+
+    /// How many Replicas this connection has released with
+    /// [`forget`](Self::forget), for `stats.forgotten`.
+    #[must_use]
+    pub fn forgotten_count(&self) -> u64 {
+        self.shared.forgotten.load(Ordering::Relaxed)
     }
 
     /// Every Surface with a Replica.
@@ -651,8 +842,12 @@ impl DataPlaneHandle {
     }
 
     /// Drains the out-of-band event queue.
+    ///
+    /// Also runs the Gap watchdog, because this is the renderer's per-frame
+    /// touch of the connection (A.2 item 5).
     #[must_use]
     pub fn take_events(&self) -> Vec<DataPlaneEvent> {
+        self.shared.check_gap_watchdog(Instant::now());
         std::mem::take(&mut *self.shared.events.lock())
     }
 
@@ -1000,8 +1195,8 @@ pub use io_thread::{DataPlaneConnection, Stream};
 mod tests {
     use super::*;
     use st_proto::{
-        Bell, Cursor, Delta, Detached, DirtyRow, HelloAck, Modes, PackedCell, RejectReason, Row,
-        Snapshot, Style, StyleIdx, SurfaceExited, ViewState,
+        Bell, Color, Cursor, Delta, Detached, DirtyRow, HelloAck, Modes, PackedCell, RejectReason,
+        Row, Snapshot, Style, StyleIdx, SurfaceExited, ViewState,
     };
     use std::sync::atomic::AtomicUsize;
 
@@ -1268,6 +1463,146 @@ mod tests {
     }
 
     #[test]
+    fn a_gap_resyncs_to_a_snapshot_and_counts_it() {
+        let (shared, _) = wired(DataPlaneOptions::default());
+        let sink = attach_sink(&shared);
+        let handle = DataPlaneHandle::from_shared(Arc::clone(&shared));
+        let mut core = DataPlaneCore::new(Arc::clone(&shared));
+        handle.attach(SurfaceId(3), AttachMode::Active).unwrap();
+
+        // The first Snapshot is the one an Attach gets.
+        core.feed(&wire(&[DataMsg::Snapshot(Box::new(snapshot(1, &["a"])))]))
+            .unwrap();
+        assert_eq!(
+            handle.counters(SurfaceId(3)),
+            ReplicaCounters {
+                snapshots: 1,
+                ..ReplicaCounters::default()
+            }
+        );
+
+        // A Delta that does not build on seq 1 is a Gap: dropped, counted,
+        // and answered with a Resync.
+        core.feed(&wire(&[DataMsg::Delta(Box::new(delta(5, 4, vec![])))]))
+            .unwrap();
+        let counters = handle.counters(SurfaceId(3));
+        assert_eq!(counters.gaps, 1);
+        assert_eq!(counters.resyncs, 1);
+        assert_eq!(counters.snapshots, 1);
+        assert!(handle
+            .take_events()
+            .iter()
+            .any(|event| matches!(event, DataPlaneEvent::Gap(_))));
+        let last = sink.messages().pop();
+        assert!(
+            matches!(
+                last,
+                Some(DataMsg::Attach(Attach {
+                    want_snapshot: true,
+                    ..
+                }))
+            ),
+            "expected a Resync Attach, got {last:?}"
+        );
+        // The Replica did not move.
+        assert_eq!(
+            handle.with_replica(SurfaceId(3), Replica::seq),
+            Some(Seq(1))
+        );
+
+        // The Server answers the Resync with a Snapshot carrying the styles
+        // the dropped Delta introduced; the Replica and its counters catch up.
+        let styled = Style {
+            fg: Color::Indexed(2),
+            ..Style::DEFAULT
+        };
+        let mut healed = snapshot(5, &["resynced"]);
+        healed.styles = vec![Style::DEFAULT, styled];
+        healed.grid[0].cells[0] = PackedCell::from_char('r', StyleIdx::new(1));
+        core.feed(&wire(&[DataMsg::Snapshot(Box::new(healed))]))
+            .unwrap();
+
+        handle
+            .with_replica(SurfaceId(3), |replica| {
+                assert_eq!(replica.seq(), Seq(5));
+                assert_eq!(replica.styles().len(), 2);
+                let cell = replica.row(0).unwrap().cell_at(0);
+                assert_eq!(cell.style_idx, StyleIdx::new(1));
+                assert_eq!(replica.style_of(cell).fg, Color::Indexed(2));
+            })
+            .unwrap();
+        assert_eq!(
+            handle.counters(SurfaceId(3)),
+            ReplicaCounters {
+                gaps: 1,
+                resyncs: 1,
+                snapshots: 2,
+            }
+        );
+    }
+
+    #[test]
+    fn the_watchdog_forgets_a_stale_gap_and_a_snapshot_heals_a_pending_one() {
+        let (shared, _) = wired(DataPlaneOptions::default());
+        attach_sink(&shared);
+        let handle = DataPlaneHandle::from_shared(Arc::clone(&shared));
+        let mut core = DataPlaneCore::new(Arc::clone(&shared));
+        handle.attach(SurfaceId(3), AttachMode::Active).unwrap();
+
+        core.feed(&wire(&[
+            DataMsg::Snapshot(Box::new(snapshot(1, &["a"]))),
+            DataMsg::Delta(Box::new(delta(5, 4, vec![]))),
+        ]))
+        .unwrap();
+        assert_eq!(shared.pending_gaps.lock().len(), 1);
+        let detected = shared
+            .pending_gaps
+            .lock()
+            .get(&SurfaceId(3))
+            .expect("a pending gap")
+            .detected_at;
+
+        // Before the window closes the Gap is still being watched.
+        shared.check_gap_watchdog(detected + Duration::from_millis(1_999));
+        assert_eq!(shared.pending_gaps.lock().len(), 1);
+
+        // At the window it warns once and is forgotten, so a later check is
+        // silent.
+        shared.check_gap_watchdog(detected + GAP_WATCHDOG);
+        assert!(shared.pending_gaps.lock().is_empty());
+        shared.check_gap_watchdog(detected + GAP_WATCHDOG * 2);
+        assert!(shared.pending_gaps.lock().is_empty());
+
+        // A second Gap followed by a Snapshot is healed without a warning.
+        core.feed(&wire(&[DataMsg::Delta(Box::new(delta(5, 4, vec![])))]))
+            .unwrap();
+        assert_eq!(shared.pending_gaps.lock().len(), 1);
+        core.feed(&wire(&[DataMsg::Snapshot(Box::new(snapshot(
+            6,
+            &["healed"],
+        )))]))
+        .unwrap();
+        assert!(shared.pending_gaps.lock().is_empty());
+    }
+
+    #[test]
+    fn is_attached_follows_the_attachment_set() {
+        let (shared, _) = wired(DataPlaneOptions::default());
+        attach_sink(&shared);
+        let handle = DataPlaneHandle::from_shared(Arc::clone(&shared));
+
+        assert!(!handle.is_attached(SurfaceId(3)));
+        handle.attach(SurfaceId(3), AttachMode::Active).unwrap();
+        assert!(handle.is_attached(SurfaceId(3)));
+        handle.detach(SurfaceId(3)).unwrap();
+        assert!(!handle.is_attached(SurfaceId(3)));
+
+        handle.attach(SurfaceId(3), AttachMode::Passive).unwrap();
+        handle.forget(SurfaceId(3));
+        assert!(!handle.is_attached(SurfaceId(3)));
+    }
+
+    #[test]
     fn out_of_band_messages_become_events() {
         let (shared, _) = wired(DataPlaneOptions::default());
         attach_sink(&shared);
@@ -1335,6 +1670,110 @@ mod tests {
                 assert_eq!(r.seq(), Seq(9));
             })
             .unwrap();
+    }
+
+    #[test]
+    fn five_thousand_events_do_not_grow_the_queue_past_the_cap() {
+        let (shared, _) = wired(DataPlaneOptions::default());
+        for i in 0..5_000u32 {
+            // Alternate Surfaces so the bells cannot coalesce away.
+            let surface = if i % 2 == 0 {
+                SurfaceId(3)
+            } else {
+                SurfaceId(4)
+            };
+            shared.push_event(DataPlaneEvent::Bell(surface));
+        }
+
+        let events = shared.events.lock();
+        assert_eq!(
+            events.len(),
+            EVENT_QUEUE_CAP,
+            "the queue should hold exactly the cap, not grow with the stream"
+        );
+        assert_eq!(
+            events.last(),
+            Some(&DataPlaneEvent::Bell(SurfaceId(4))),
+            "the newest event is never the one dropped"
+        );
+        assert_eq!(
+            events.first(),
+            Some(&DataPlaneEvent::Bell(SurfaceId(3))),
+            "oldest events are dropped first"
+        );
+    }
+
+    #[test]
+    fn consecutive_bells_of_one_surface_coalesce() {
+        let (shared, _) = wired(DataPlaneOptions::default());
+        shared.push_event(DataPlaneEvent::Bell(SurfaceId(3)));
+        shared.push_event(DataPlaneEvent::Bell(SurfaceId(3)));
+        assert_eq!(shared.events.lock().len(), 1);
+
+        shared.push_event(DataPlaneEvent::Bell(SurfaceId(4)));
+        shared.push_event(DataPlaneEvent::Bell(SurfaceId(4)));
+        assert_eq!(shared.events.lock().len(), 2);
+
+        // A different Surface in between breaks the run.
+        shared.push_event(DataPlaneEvent::Bell(SurfaceId(3)));
+        shared.push_event(DataPlaneEvent::Bell(SurfaceId(3)));
+        let events = shared.events.lock();
+        assert_eq!(events.len(), 3);
+        assert_eq!(events[2], DataPlaneEvent::Bell(SurfaceId(3)));
+    }
+
+    #[test]
+    fn the_queue_drops_bells_before_lifecycle_events_when_full() {
+        let (shared, _) = wired(DataPlaneOptions::default());
+        for i in 0..EVENT_QUEUE_CAP {
+            let surface = if i % 2 == 0 {
+                SurfaceId(3)
+            } else {
+                SurfaceId(4)
+            };
+            shared.push_event(DataPlaneEvent::Bell(surface));
+        }
+        shared.push_event(DataPlaneEvent::Disconnected {
+            reason: "server went away".into(),
+        });
+        shared.push_event(DataPlaneEvent::Bell(SurfaceId(3)));
+
+        let events = shared.events.lock();
+        assert_eq!(events.len(), EVENT_QUEUE_CAP);
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, DataPlaneEvent::Disconnected { .. })),
+            "the lifecycle event must survive the cap"
+        );
+        assert_eq!(events.last(), Some(&DataPlaneEvent::Bell(SurfaceId(3))));
+    }
+
+    #[test]
+    fn a_queue_of_only_lifecycle_events_keeps_its_bound_too() {
+        let (shared, _) = wired(DataPlaneOptions::default());
+        for i in 0..EVENT_QUEUE_CAP {
+            shared.push_event(DataPlaneEvent::Disconnected {
+                reason: format!("disconnect {i}"),
+            });
+        }
+        shared.push_event(DataPlaneEvent::Exited {
+            surface_id: SurfaceId(3),
+            status: ExitStatus {
+                code: Some(0),
+                signal: None,
+            },
+        });
+
+        let events = shared.events.lock();
+        assert_eq!(events.len(), EVENT_QUEUE_CAP, "the cap is still hard");
+        assert!(matches!(events.last(), Some(DataPlaneEvent::Exited { .. })));
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, DataPlaneEvent::Disconnected { reason } if reason == "disconnect 0")),
+            "the oldest lifecycle event made room for the newest"
+        );
     }
 
     #[test]
@@ -1549,9 +1988,18 @@ mod tests {
             handle.with_replica(SurfaceId(3), Replica::cached_history_len),
             Some(0)
         );
+        // The convenience path trims a live Replica and does not create one.
+        handle.shrink_history_to(SurfaceId(3), 1000);
+        handle.shrink_history_to(SurfaceId(99), 1000);
+        assert!(handle.with_replica(SurfaceId(99), |_| ()).is_none());
 
+        assert_eq!(handle.forgotten_count(), 0);
         handle.forget(SurfaceId(3));
         assert!(handle.surfaces().is_empty());
+        assert_eq!(handle.forgotten_count(), 1);
+        // Forgetting an already-forgotten Surface does not count twice.
+        handle.forget(SurfaceId(3));
+        assert_eq!(handle.forgotten_count(), 1);
     }
 
     #[test]
@@ -1863,6 +2311,97 @@ mod socket_tests {
             .iter()
             .any(|e| matches!(e, DataPlaneEvent::Disconnected { .. }))
             || !conn.is_connected()));
+        conn.shutdown();
+    }
+
+    #[test]
+    fn a_reconnect_reattaches_exactly_once_per_attachment() {
+        let dir = TempDir::new("st-dataplane-reattach");
+        let path = dir.path().join("data.sock");
+        let listener = UnixListener::bind(&path).expect("bind");
+
+        // Serve two connections: read whatever arrives until the client goes
+        // quiet, then drop the stream to force the reconnect. The reconnect
+        // delay is short, so the client redials while the listener is still
+        // accepting.
+        let server = std::thread::spawn(move || {
+            let mut per_connection: Vec<Vec<DataMsg>> = Vec::new();
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().expect("accept");
+                stream
+                    .set_read_timeout(Some(Duration::from_millis(200)))
+                    .expect("read timeout");
+                let mut decoder = FrameDecoder::expecting_magic();
+                let mut got = Vec::new();
+                let mut buf = [0u8; 4096];
+                loop {
+                    match stream.read(&mut buf) {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            decoder.push(&buf[..n]);
+                            while let Some(frame) = decoder.next_frame().expect("framing") {
+                                got.push(
+                                    DataMsg::from_frame(frame.msg_type, &frame.payload)
+                                        .expect("decode"),
+                                );
+                            }
+                        }
+                        Err(err)
+                            if err.kind() == std::io::ErrorKind::WouldBlock
+                                || err.kind() == std::io::ErrorKind::TimedOut =>
+                        {
+                            break;
+                        }
+                        Err(_) => break,
+                    }
+                }
+                per_connection.push(got);
+            }
+            per_connection
+        });
+
+        let conn = DataPlaneConnection::connect(
+            &path,
+            DataPlaneOptions {
+                build_id: "reattach-test".into(),
+                reconnect: true,
+                reconnect_delay: Duration::from_millis(10),
+                max_reconnect_delay: Duration::from_millis(20),
+                ..DataPlaneOptions::default()
+            },
+            Box::new(|| {}),
+        )
+        .expect("connect");
+        assert!(
+            wait_for(|| conn.is_connected()),
+            "the I/O thread should connect"
+        );
+        conn.attach(SurfaceId(5), AttachMode::Passive)
+            .expect("attach");
+
+        let received = server.join().expect("server thread");
+        assert_eq!(received.len(), 2, "the client should reconnect once");
+
+        // The second connection is the reconnect: `reattach_all` must send
+        // exactly one Attach for the one attachment, never a duplicate (R4).
+        let reconnected = &received[1];
+        assert!(
+            matches!(reconnected.first(), Some(DataMsg::Hello(_))),
+            "expected a Hello first, got {reconnected:?}"
+        );
+        let attaches: Vec<&Attach> = reconnected
+            .iter()
+            .filter_map(|msg| match msg {
+                DataMsg::Attach(attach) => Some(attach),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(attaches.len(), 1, "Attach messages: {attaches:?}");
+        assert_eq!(attaches[0].surface_id, SurfaceId(5));
+        assert_eq!(attaches[0].mode, AttachMode::Passive);
+
+        // The attachment survived the reconnect.
+        assert!(conn.handle().is_attached(SurfaceId(5)));
         conn.shutdown();
     }
 

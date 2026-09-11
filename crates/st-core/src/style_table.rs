@@ -4,16 +4,18 @@
 //! [`Style::DEFAULT`], the cap is [`STYLE_TABLE_CAP`] = 4096, `intern` returns
 //! `None` when full). What lives here is the *server* policy on top of it:
 //!
-//! * remember which entries have not been communicated yet, so a `Delta` can
-//!   carry `new_styles` and a client can apply the frame in one pass
-//!   (`03-server.md` §4);
+//! * the table is append-only within a generation, so a subscriber's "what
+//!   has it seen" cursor is just a length; [`Self::styles_from`] slices the
+//!   table for `Delta.new_styles` and the cursor lives on the subscriber
+//!   (a `Subscription` for the fan-out path, the `Surface` itself for the
+//!   single-consumer path);
 //! * on overflow, reset the table, bump the generation and latch a
 //!   "needs Snapshot" flag — indices from the old generation are meaningless
 //!   to a client, so the next frame on every subscription must be a full
 //!   `Snapshot` carrying the whole new table (grilling Q45).
 //!
-//! Because the table is append-only within a generation, "not yet sent" is
-//! just a watermark: every entry from `flushed_len` upwards is new.
+//! A `Snapshot` never resets the table, so one subscriber's Snapshot cannot
+//! invalidate the indices another subscriber holds (ADR 0011).
 //!
 //! History rows are never *stored* with indices: `FetchHistory` re-encodes
 //! from the engine at request time, so an evicted index can never leak.
@@ -24,8 +26,6 @@ use st_proto::{Style, StyleIdx, StyleTable, STYLE_TABLE_CAP};
 #[derive(Debug, Clone)]
 pub struct SurfaceStyleTable {
     table: StyleTable,
-    /// Number of leading entries the peer is known to have.
-    flushed_len: usize,
     generation: u32,
     overflowed: bool,
 }
@@ -42,7 +42,6 @@ impl SurfaceStyleTable {
     pub fn new() -> Self {
         Self {
             table: StyleTable::new(),
-            flushed_len: 1,
             generation: 0,
             overflowed: false,
         }
@@ -64,35 +63,19 @@ impl SurfaceStyleTable {
             .expect("a freshly reset style table always has room")
     }
 
-    /// The style-table entries the peer has not seen yet, in index order,
-    /// ready for `Delta.new_styles`.
+    /// The entries from `from` (an index into the table) to the end, in index
+    /// order, ready for `Delta.new_styles`.
+    ///
+    /// `from` past the end is not an error: an up-to-date cursor yields an
+    /// empty slice.
     #[must_use]
-    pub fn new_styles(&self) -> Vec<(StyleIdx, Style)> {
-        self.table.as_slice()[self.flushed_len..]
+    pub fn styles_from(&self, from: usize) -> Vec<(StyleIdx, Style)> {
+        let from = from.min(self.table.len());
+        self.table.as_slice()[from..]
             .iter()
             .enumerate()
-            .map(|(off, style)| (StyleIdx::new((self.flushed_len + off) as u16), *style))
+            .map(|(off, style)| (StyleIdx::new((from + off) as u16), *style))
             .collect()
-    }
-
-    /// `true` when the peer is missing at least one entry.
-    #[must_use]
-    pub fn has_new_styles(&self) -> bool {
-        self.flushed_len < self.table.len()
-    }
-
-    /// Takes the unsent entries and marks them as sent.
-    pub fn take_new(&mut self) -> Vec<(StyleIdx, Style)> {
-        let new = self.new_styles();
-        self.flushed_len = self.table.len();
-        new
-    }
-
-    /// Rewinds the watermark so the next frame re-sends every entry.
-    ///
-    /// Used when a half-built Delta is discarded, and after a reset.
-    pub fn rollback_flush_window(&mut self) {
-        self.flushed_len = 1;
     }
 
     /// `true` when the table overflowed since the flag was last taken, i.e. a
@@ -118,7 +101,6 @@ impl SurfaceStyleTable {
     /// latches [`Self::overflowed`].
     pub fn reset(&mut self) {
         self.table.reset();
-        self.flushed_len = 1;
         self.generation = self.generation.wrapping_add(1);
         self.overflowed = true;
     }
@@ -145,12 +127,6 @@ impl SurfaceStyleTable {
     #[must_use]
     pub fn is_full(&self) -> bool {
         self.table.len() >= STYLE_TABLE_CAP
-    }
-
-    /// Marks the whole table as already sent, which is what building a
-    /// `Snapshot` does (a Snapshot carries every entry).
-    pub fn mark_all_flushed(&mut self) {
-        self.flushed_len = self.table.len();
     }
 
     /// Looks an index up; `None` for an index this generation never assigned.
@@ -191,27 +167,35 @@ mod tests {
     }
 
     #[test]
-    fn new_styles_are_reported_once() {
+    fn styles_from_slices_the_append_only_table() {
         let mut t = SurfaceStyleTable::new();
+        assert_eq!(t.styles_from(0), vec![(StyleIdx::ZERO, Style::DEFAULT)]);
+        assert!(t.styles_from(1).is_empty(), "an up-to-date cursor is empty");
+
         t.intern(rgb(1));
         t.intern(rgb(2));
         t.intern(rgb(1));
-        assert!(t.has_new_styles());
-        let first = t.take_new();
         assert_eq!(
-            first,
-            vec![(StyleIdx::new(1), rgb(1)), (StyleIdx::new(2), rgb(2))]
+            t.styles_from(0),
+            vec![
+                (StyleIdx::ZERO, Style::DEFAULT),
+                (StyleIdx::new(1), rgb(1)),
+                (StyleIdx::new(2), rgb(2)),
+            ]
         );
-
-        t.intern(rgb(1));
-        assert!(!t.has_new_styles());
-        assert!(
-            t.take_new().is_empty(),
-            "an already-flushed style is not resent"
+        assert_eq!(
+            t.styles_from(1),
+            vec![(StyleIdx::new(1), rgb(1)), (StyleIdx::new(2), rgb(2))],
+            "an already-sent prefix is not resent"
         );
+        assert_eq!(t.styles_from(2), vec![(StyleIdx::new(2), rgb(2))]);
+        assert!(t.styles_from(999).is_empty(), "past the end clamps");
 
         t.intern(rgb(3));
-        assert_eq!(t.take_new(), vec![(StyleIdx::new(3), rgb(3))]);
+        assert_eq!(
+            t.styles_from(2),
+            vec![(StyleIdx::new(2), rgb(2)), (StyleIdx::new(3), rgb(3))]
+        );
     }
 
     #[test]
@@ -239,29 +223,5 @@ mod tests {
         assert_eq!(t.get(StyleIdx::new(1)), Some(overflow));
         assert!(t.take_overflow());
         assert!(!t.take_overflow());
-    }
-
-    #[test]
-    fn mark_all_flushed_after_a_snapshot() {
-        let mut t = SurfaceStyleTable::new();
-        t.intern(rgb(1));
-        t.mark_all_flushed();
-        assert!(t.new_styles().is_empty());
-        t.intern(rgb(2));
-        assert_eq!(t.new_styles().len(), 1);
-    }
-
-    #[test]
-    fn rollback_resends_the_whole_table() {
-        let mut t = SurfaceStyleTable::new();
-        t.intern(rgb(1));
-        t.take_new();
-        t.intern(rgb(2));
-        t.rollback_flush_window();
-        assert_eq!(
-            t.take_new().len(),
-            2,
-            "a discarded frame re-queues everything"
-        );
     }
 }

@@ -32,6 +32,15 @@ against a WSL server, exe + MSI included). Planning history is preserved below.
 
 ## Run and build
 
+Run the Server as a **release** build for daily use
+(`cargo build --release -p st-server -p st-cli`). A debug Server is for
+development only: it is much slower, and with the default 10 000-line
+scrollback the Server's memory is dominated by scrollback itself, roughly
+40 MB per busy Surface at 168 columns — a debug build holds the same rows with
+worse overhead. Release builds keep the budget in the handover
+(`docs/handover-reattach-memory-placement.md` §B). Debug builds stay useful for
+development and `RUST_LOG` tracing.
+
 ### Linux (incl. WSL2 — the primary dev setup)
 
 ```bash

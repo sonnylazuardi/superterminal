@@ -106,6 +106,7 @@ first (see `docs/DEV.md` §2).
 |---|---|---|---|
 | `patches/0001-factory-hook.patch` | 33 insertions | `register_global_factory` + the four visibility changes an out-of-tree `CustomElement` needs. Design: `docs/plan/04-client-native.md` §1.2 option (b). | PR **not yet opened** — record the URL here (M0-06 tail). |
 | `patches/0002-linux-simulate-mouse-double-lease.patch` | 7 insertions | Bug fix: `simulateClick`/`simulateMouse*` panic the GPUI thread on Linux with a double lease of `GpuixView`. | Issue/PR **not yet opened**. Drop the patch when it lands. |
+| `patches/0003-window-placement.patch` | 327 insertions, 17 deletions | `WindowOptions` gains `x`/`y`/`display`/`maximized`; both init paths pick the display by uuid (fallback: the display containing the window centre) and open `WindowBounds::Maximized`; new napi `getWindowPlacement()` reads the restore geometry, display and state. On Windows the windowed case saves `window_bounds()` (the create path's client-rect space), because saving the live client rect walked the window down by the title-bar asymmetry on every relaunch. The Client State placement (field-additive; version stays 1) persists it. | PR **not yet opened** (no `gh` token on this box) — record the URL here. Drop the patch when the upstream API lands. |
 
 0001 does four things beyond adding the hook, each forced by a real compile or
 test failure, not by taste:
@@ -124,6 +125,17 @@ napi call fails with "The GPUI UI thread is not running". The `DispatchKey` arm
 directly below already routes through `gpui::AnyWindowHandle`, which does not
 lease; the fix makes the mouse arm do the same. gpuix's own suite misses it
 because `TestGpuixRenderer` is compiled on macOS/Windows only.
+
+0003 is the Window Placement API (Part C of
+`docs/handover-reattach-memory-placement.md`). GPUI can open at
+`WindowBounds::Windowed`/`Maximized` on a chosen `display_id` and read the live
+window's bounds, display and maximized state, but gpuix exposes none of it; the
+patch is a thin translation of those GPUI calls. `window_bounds()` supplies the
+restore bounds while maximized/fullscreen (on Windows it is the `rcNormalPosition`
+rect, not the screen-filling one) and `window.bounds()` the live windowed rect.
+macOS never reports a maximized `WindowBounds`, so `is_maximized()` is the
+signal there. No config or wire format changes: the placement is local Client
+State (ADR 0008). Rebase on every gpuix bump like 0001/0002.
 
 ## 7. Build timings
 

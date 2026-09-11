@@ -89,7 +89,7 @@ clone is several GB and nothing here reads its history.
 
 ### `just vendor-patch` semantics
 
-Two patches, applied in order, and `git apply` is not idempotent — running it
+Three patches, applied in order, and `git apply` is not idempotent — running it
 twice fails with `patch does not apply`. Guard each by testing the reverse first:
 
 ```
@@ -108,7 +108,11 @@ To start over: `git -C vendor/gpuix checkout -- packages/native/src`.
 What the patches do and why each hunk exists is in `docs/PINS.md` §6. The short
 version: **0001** is the factory-registration hook plus four visibility changes;
 **0002** is an upstream bug fix without which every `simulateClick` panics the
-GPUI thread on Linux, so no automated input test can run.
+GPUI thread on Linux, so no automated input test can run; **0003** adds Window
+Placement to gpuix — `WindowOptions.x/y/display/maximized`, a `getWindowPlacement()`
+napi read, and display lookup by uuid or window centre — which the Client State
+(ADR 0008) uses to reopen at the last size, position, monitor and maximized state.
+It must be rebased on every gpuix bump, exactly like 0001/0002.
 
 ### Build times
 

@@ -19,6 +19,11 @@
 //! * **Ack window.** At most [`PublisherConfig::ack_window`] Deltas may be in
 //!   flight per subscription ([`st_proto::MAX_UNACKED_DELTAS`] = 4). A blocked
 //!   subscription is skipped, never buffered.
+//! * **Per-subscription sequencing (ADR 0011).** Every frame is emitted with a
+//!   `since` of the subscription's own `last_sent_seq`, so a subscription that
+//!   skipped a flush never looks like a Gap. Style visibility is likewise
+//!   per-subscription: a subscription with a stale style cursor forces a
+//!   Snapshot, and the frame builder records what it actually sent.
 //! * **Slow-client policy.** Blocked for
 //!   [`PublisherConfig::slow_client_snapshot_after`] (3 s) ⇒ force a Snapshot,
 //!   which is cheaper than replaying and guarantees convergence. No Ack at all
@@ -151,6 +156,10 @@ pub struct Subscription {
     needs_snapshot: bool,
     stalled_since: Option<Instant>,
     last_ack_at: Instant,
+    /// The style-table generation this Client's frames were built against.
+    styles_generation: u32,
+    /// How many leading style entries this Client has been sent.
+    styles_sent: u16,
 }
 
 impl Subscription {
@@ -184,6 +193,21 @@ impl Subscription {
         self.needs_snapshot
     }
 
+    /// The style-table generation this Client's frames were built against.
+    ///
+    /// When it no longer matches the Surface's table, the next frame must be a
+    /// Snapshot (ADR 0011).
+    #[must_use]
+    pub fn styles_generation(&self) -> u32 {
+        self.styles_generation
+    }
+
+    /// How many leading style entries this Client has been sent.
+    #[must_use]
+    pub fn styles_sent(&self) -> u16 {
+        self.styles_sent
+    }
+
     /// `true` when the ack window is full, so no Delta may be sent.
     #[must_use]
     pub fn is_window_blocked(&self, ack_window: u32) -> bool {
@@ -209,6 +233,10 @@ pub struct Emission {
     pub mode: AttachMode,
     /// The frame to build.
     pub kind: EmissionKind,
+    /// The subscription's own last sent sequence, captured *before* this flush
+    /// advances it. `Delta.since_seq` is built from this, so an idle
+    /// subscription never reports a Gap (ADR 0011).
+    pub since: Seq,
     /// A standalone `Bell` must accompany the frame (it is an event, not
     /// state, so it is outside the sequence — grilling Q38).
     pub bell: bool,
@@ -227,6 +255,11 @@ pub enum EmissionKind {
         title: bool,
         /// `Some` when the grid was resized in this frame.
         resized: Option<(u16, u16)>,
+        /// First style-table entry the Client still needs.
+        styles_from: u16,
+        /// The style-table generation those entries belong to. If the table
+        /// has reset since, the frame is rebuilt as a Snapshot.
+        styles_generation: u32,
     },
     /// Nothing but the bell: no state changed for this subscription.
     BellOnly,
@@ -284,8 +317,8 @@ impl Publisher {
 
     /// Subscribes `client`. The first frame is always a Snapshot (§6, Attach).
     ///
-    /// Returns `false` when the Client is already attached: a second Attach to
-    /// the same Surface from one connection is rejected (§6).
+    /// Returns `false` when the Client is already attached. The Server answers
+    /// that with [`Publisher::resync`] instead of an error (ADR 0011).
     pub fn attach(&mut self, client: ClientId, mode: AttachMode, now: Instant) -> bool {
         if self.subs.contains_key(&client) {
             return false;
@@ -306,8 +339,27 @@ impl Publisher {
                 needs_snapshot: true,
                 stalled_since: None,
                 last_ack_at: now,
+                styles_generation: 0,
+                styles_sent: 0,
             },
         );
+        true
+    }
+
+    /// Answers a repeated `Attach` with a fresh Snapshot instead of an error
+    /// (ADR 0011): the attachment is kept, the mode may change, whatever was
+    /// coalesced is dropped, and the stall/silence clocks restart.
+    ///
+    /// Returns `false` when the Client was never attached.
+    pub fn resync(&mut self, client: ClientId, mode: AttachMode, now: Instant) -> bool {
+        let Some(sub) = self.subs.get_mut(&client) else {
+            return false;
+        };
+        sub.mode = mode;
+        sub.needs_snapshot = true;
+        sub.pending.clear();
+        sub.stalled_since = None;
+        sub.last_ack_at = now;
         true
     }
 
@@ -467,27 +519,41 @@ impl Publisher {
     ///
     /// `seq` is the sequence number the frames of this round will carry: one
     /// flush describes one coalesced state, so every Client that receives
-    /// something receives the same `seq`.
+    /// something receives the same `seq`. `styles_generation` is the Surface's
+    /// current style-table generation; a subscription still living in an older
+    /// one is owed a Snapshot (ADR 0011).
     ///
     /// The returned vector is sorted by [`ClientId`] so the output is
-    /// deterministic for tests and logs.
-    pub fn flush(&mut self, now: Instant, seq: Seq) -> Vec<Emission> {
+    /// deterministic for tests and logs. After building each frame the caller
+    /// reports what it actually sent with [`Publisher::record_styles_sent`].
+    pub fn flush(&mut self, now: Instant, seq: Seq, styles_generation: u32) -> Vec<Emission> {
         self.last_flush = Some(now);
         let ack_window = self.config.ack_window;
         let slow_after = self.config.slow_client_snapshot_after;
 
         let mut out = Vec::new();
         for (client, sub) in &mut self.subs {
+            if sub.styles_generation != styles_generation {
+                // The table reset under this subscription (overflow, RIS):
+                // none of its style indices are meaningful any more.
+                sub.needs_snapshot = true;
+                sub.pending.dirty.set_all();
+            }
             if !sub.needs_snapshot && sub.pending.is_empty() {
                 continue;
             }
             let bell = sub.pending.bell;
+            // Capture the cursor *before* this flush advances it: `since` is
+            // what makes the Delta chain on the last frame this Client saw.
+            let since = sub.last_sent_seq;
+            let styles_from = sub.styles_sent;
+            let sub_styles_generation = sub.styles_generation;
 
             // A window-blocked subscription buffers nothing; after
             // `slow_after` it is converged with a Snapshot instead.
             if !sub.needs_snapshot && sub.is_window_blocked(ack_window) {
-                let since = *sub.stalled_since.get_or_insert(now);
-                if now.saturating_duration_since(since) < slow_after {
+                let since_stall = *sub.stalled_since.get_or_insert(now);
+                if now.saturating_duration_since(since_stall) < slow_after {
                     if bell {
                         // The bell is outside the sequence, so it is never
                         // held back by the window.
@@ -496,6 +562,7 @@ impl Publisher {
                             client: *client,
                             mode: sub.mode,
                             kind: EmissionKind::BellOnly,
+                            since,
                             bell: true,
                         });
                     }
@@ -516,6 +583,7 @@ impl Publisher {
                     client: *client,
                     mode: sub.mode,
                     kind: EmissionKind::Snapshot,
+                    since,
                     bell,
                 });
                 continue;
@@ -538,12 +606,41 @@ impl Publisher {
                     dirty,
                     title,
                     resized,
+                    styles_from,
+                    styles_generation: sub_styles_generation,
                 },
+                since,
                 bell,
             });
         }
         out.sort_by_key(|e| e.client);
         out
+    }
+
+    /// Records that `client`'s frames now carry every style-table entry below
+    /// `sent_len` of generation `generation`.
+    ///
+    /// The frame builder calls this after constructing a Snapshot or a Delta,
+    /// because interning happens while rows are packed — only then is the
+    /// final table length known (ADR 0011).
+    pub fn record_styles_sent(&mut self, client: ClientId, generation: u32, sent_len: usize) {
+        if let Some(sub) = self.subs.get_mut(&client) {
+            sub.styles_generation = generation;
+            sub.styles_sent = u16::try_from(sent_len).unwrap_or(u16::MAX);
+        }
+    }
+
+    /// Records that a standalone sequenced event (a `SurfaceExited`) was
+    /// delivered to every attached Client.
+    ///
+    /// The event consumes one sequence number for the whole Surface, so every
+    /// subscription's cursor must advance past it: otherwise the next Delta
+    /// would chain on an older seq than the Client last saw and look like a
+    /// Gap (ADR 0011).
+    pub fn note_event_sent(&mut self, seq: Seq) {
+        for sub in self.subs.values_mut() {
+            sub.last_sent_seq = sub.last_sent_seq.max(seq);
+        }
     }
 
     fn for_each_pending(&mut self, mut f: impl FnMut(&mut Coalesced)) {
@@ -577,7 +674,7 @@ mod tests {
 
     /// Drains the initial Snapshot an Attach always produces.
     fn settle(pub_: &mut Publisher, client: ClientId, now: Instant, seq: u64) -> Instant {
-        let out = pub_.flush(now, Seq::new(seq));
+        let out = pub_.flush(now, Seq::new(seq), 0);
         assert!(matches!(out[0].kind, EmissionKind::Snapshot));
         pub_.ack(client, Seq::new(seq), now);
         now + Duration::from_millis(20)
@@ -593,11 +690,43 @@ mod tests {
         );
         assert!(p.should_flush(t0), "the first frame is immediate");
 
-        let out = p.flush(t0, Seq::new(1));
+        let out = p.flush(t0, Seq::new(1), 0);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].client, C1);
         assert_eq!(out[0].kind, EmissionKind::Snapshot);
         assert!(!p.has_pending());
+    }
+
+    #[test]
+    fn a_repeated_attach_becomes_a_resync_snapshot() {
+        let (mut p, t0) = publisher(10);
+        p.attach(C1, AttachMode::Active, t0);
+        let now = settle(&mut p, C1, t0, 1);
+
+        // Coalesced state exists, but a Resync replaces it wholesale.
+        p.record_damage(&dirty(10, &[0]));
+        p.record_bell();
+
+        assert!(!p.attach(C1, AttachMode::Active, now), "already attached");
+        assert!(
+            p.resync(C1, AttachMode::Passive, now),
+            "a repeated Attach resyncs"
+        );
+        let out = p.flush(now, Seq::new(2), 0);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].kind, EmissionKind::Snapshot);
+        assert_eq!(
+            out[0].mode,
+            AttachMode::Passive,
+            "the mode of the second Attach is honoured"
+        );
+        assert_eq!(p.subscription(C1).unwrap().mode(), AttachMode::Passive);
+        assert!(!p.has_pending(), "the resync cleared the coalesced damage");
+
+        assert!(
+            !p.resync(ClientId(9), AttachMode::Active, now),
+            "an unknown client cannot be resynced"
+        );
     }
 
     #[test]
@@ -612,7 +741,7 @@ mod tests {
         p.record_bell();
         p.record_bell();
 
-        let out = p.flush(t1, Seq::new(2));
+        let out = p.flush(t1, Seq::new(2), 0);
         assert_eq!(out.len(), 1);
         assert!(out[0].bell, "bells are ORed into one flag");
         match &out[0].kind {
@@ -632,12 +761,101 @@ mod tests {
 
         p.attach(C2, AttachMode::Active, t1);
         p.record_damage(&dirty(10, &[3]));
-        let out = p.flush(t1, Seq::new(2));
+        let out = p.flush(t1, Seq::new(2), 0);
         assert_eq!(out.len(), 2);
         assert_eq!(out[0].client, C1);
         assert!(matches!(out[0].kind, EmissionKind::Delta { .. }));
         assert_eq!(out[1].client, C2);
         assert_eq!(out[1].kind, EmissionKind::Snapshot);
+    }
+
+    /// R1: `since_seq` is the subscription's own `last_sent_seq`, so a Client
+    /// that skipped flushes never looks like a Gap (ADR 0011).
+    #[test]
+    fn since_seq_is_per_subscription_not_global() {
+        let (mut p, t0) = publisher(10);
+        p.attach(C1, AttachMode::Active, t0);
+        p.attach(C2, AttachMode::Active, t0);
+        let mut now = settle2(&mut p, t0);
+
+        // C1 fills its ack window and goes quiet; C2 acks every frame.
+        for seq in 2..=5 {
+            p.record_damage(&dirty(10, &[0]));
+            let out = p.flush(now, Seq::new(seq), 0);
+            assert_eq!(out.len(), 2, "both Clients are still inside the window");
+            p.ack(C2, Seq::new(seq), now);
+            now += Duration::from_millis(10);
+        }
+        let c1_last = p.subscription(C1).unwrap().last_sent_seq();
+        assert_eq!(c1_last, Seq::new(5));
+        assert!(p.subscription(C1).unwrap().is_window_blocked(4));
+
+        // Two flushes in which C2 receives a frame and C1 has nothing to send.
+        for seq in 6..=7 {
+            p.record_damage(&dirty(10, &[1]));
+            let out = p.flush(now, Seq::new(seq), 0);
+            assert_eq!(out.len(), 1, "only C2 is still inside the window");
+            assert_eq!(out[0].client, C2);
+            assert_eq!(out[0].since, Seq::new(seq - 1));
+            p.ack(C2, Seq::new(seq), now);
+            now += Duration::from_millis(10);
+        }
+
+        // The Ack reopens C1's window. Its next Delta must chain on the last
+        // frame *C1* received, not on the global sequence number.
+        p.ack(C1, c1_last, now);
+        p.record_damage(&dirty(10, &[2]));
+        now += Duration::from_millis(10);
+        let out = p.flush(now, Seq::new(8), 0);
+        let c1 = out
+            .iter()
+            .find(|e| e.client == C1)
+            .expect("C1 is owed a Delta");
+        assert_eq!(c1.since, c1_last, "no false Gap for the idle subscription");
+        match &c1.kind {
+            EmissionKind::Delta { dirty, .. } => {
+                assert_eq!(
+                    dirty.iter().collect::<Vec<_>>(),
+                    vec![1, 2],
+                    "everything since C1's last frame is coalesced into one Delta"
+                );
+            }
+            other => panic!("expected a Delta, got {other:?}"),
+        }
+    }
+
+    /// A subscription still holding indices from an old style-table generation
+    /// must be sent a Snapshot, whatever is pending (ADR 0011).
+    #[test]
+    fn a_stale_styles_generation_forces_a_snapshot() {
+        let (mut p, t0) = publisher(10);
+        p.attach(C1, AttachMode::Active, t0);
+        let now = settle(&mut p, C1, t0, 1);
+        p.record_styles_sent(C1, 0, 1);
+        assert_eq!(p.subscription(C1).unwrap().styles_sent(), 1);
+
+        p.record_damage(&dirty(10, &[4]));
+        let out = p.flush(now, Seq::new(2), 1);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].kind, EmissionKind::Snapshot);
+
+        // After the Snapshot is built and its cursor recorded, Deltas resume
+        // from the recorded cursor.
+        p.record_styles_sent(C1, 1, 3);
+        p.ack(C1, Seq::new(2), now);
+        p.record_damage(&dirty(10, &[5]));
+        let out = p.flush(now + Duration::from_millis(20), Seq::new(3), 1);
+        match &out[0].kind {
+            EmissionKind::Delta {
+                styles_from,
+                styles_generation,
+                ..
+            } => {
+                assert_eq!(*styles_from, 3);
+                assert_eq!(*styles_generation, 1);
+            }
+            other => panic!("expected a Delta, got {other:?}"),
+        }
     }
 
     #[test]
@@ -648,7 +866,7 @@ mod tests {
 
         p.record_damage(&dirty(10, &[0, 1, 2]));
         p.record_title();
-        let out = p.flush(t1, Seq::new(2));
+        let out = p.flush(t1, Seq::new(2), 0);
         match &out[0].kind {
             EmissionKind::Delta { dirty, title, .. } => {
                 assert!(dirty.is_empty(), "Q44: a Passive attach gets no rows");
@@ -659,7 +877,7 @@ mod tests {
 
         // Going Active re-syncs from scratch.
         p.set_mode(C1, AttachMode::Active);
-        let out = p.flush(t1 + Duration::from_millis(20), Seq::new(3));
+        let out = p.flush(t1 + Duration::from_millis(20), Seq::new(3), 0);
         assert_eq!(out[0].kind, EmissionKind::Snapshot);
     }
 
@@ -672,7 +890,7 @@ mod tests {
         // Four Deltas go out unacknowledged.
         for seq in 2..=5 {
             p.record_damage(&dirty(10, &[0]));
-            let out = p.flush(now, Seq::new(seq));
+            let out = p.flush(now, Seq::new(seq), 0);
             assert_eq!(out.len(), 1, "seq {seq} should still fit in the window");
             now += Duration::from_millis(10);
         }
@@ -681,16 +899,16 @@ mod tests {
 
         // The fifth is withheld and keeps coalescing.
         p.record_damage(&dirty(10, &[4]));
-        assert!(p.flush(now, Seq::new(6)).is_empty(), "window is full");
+        assert!(p.flush(now, Seq::new(6), 0).is_empty(), "window is full");
         now += Duration::from_millis(10);
         p.record_damage(&dirty(10, &[5]));
-        assert!(p.flush(now, Seq::new(6)).is_empty());
+        assert!(p.flush(now, Seq::new(6), 0).is_empty());
         assert!(p.has_pending(), "withheld damage is not lost");
 
         // An Ack reopens the window and the union is delivered at once.
         p.ack(C1, Seq::new(5), now);
         now += Duration::from_millis(10);
-        let out = p.flush(now, Seq::new(6));
+        let out = p.flush(now, Seq::new(6), 0);
         match &out[0].kind {
             EmissionKind::Delta { dirty, .. } => {
                 assert_eq!(dirty.iter().collect::<Vec<_>>(), vec![4, 5]);
@@ -707,25 +925,25 @@ mod tests {
 
         for seq in 2..=5 {
             p.record_damage(&dirty(10, &[0]));
-            p.flush(now, Seq::new(seq));
+            p.flush(now, Seq::new(seq), 0);
             now += Duration::from_millis(10);
         }
 
         // Blocked, and the stall clock starts on the first skipped flush.
         p.record_damage(&dirty(10, &[1]));
-        assert!(p.flush(now, Seq::new(6)).is_empty());
+        assert!(p.flush(now, Seq::new(6), 0).is_empty());
         let stalled_at = p.subscription(C1).unwrap().stalled_since().unwrap();
         assert_eq!(stalled_at, now);
 
         // Still inside the 3 s grace.
         now += Duration::from_millis(2_900);
         p.record_damage(&dirty(10, &[2]));
-        assert!(p.flush(now, Seq::new(6)).is_empty());
+        assert!(p.flush(now, Seq::new(6), 0).is_empty());
 
         // Past it: a Snapshot is forced and the window reopens.
         now += Duration::from_millis(200);
         p.record_damage(&dirty(10, &[3]));
-        let out = p.flush(now, Seq::new(6));
+        let out = p.flush(now, Seq::new(6), 0);
         assert_eq!(out[0].kind, EmissionKind::Snapshot);
         let sub = p.subscription(C1).unwrap();
         assert!(!sub.is_window_blocked(4));
@@ -740,11 +958,11 @@ mod tests {
         let mut now = settle(&mut p, C1, t0, 1);
         for seq in 2..=5 {
             p.record_damage(&dirty(10, &[0]));
-            p.flush(now, Seq::new(seq));
+            p.flush(now, Seq::new(seq), 0);
             now += Duration::from_millis(10);
         }
         p.record_bell();
-        let out = p.flush(now, Seq::new(6));
+        let out = p.flush(now, Seq::new(6), 0);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].kind, EmissionKind::BellOnly);
         assert!(out[0].bell);
@@ -758,7 +976,7 @@ mod tests {
 
         p.record_damage(&dirty(10, &[0]));
         assert!(p.should_flush(now), "20 ms after the last flush: due");
-        p.flush(now, Seq::new(2));
+        p.flush(now, Seq::new(2), 0);
 
         p.record_damage(&dirty(10, &[1]));
         assert!(!p.should_flush(now + Duration::from_millis(4)));
@@ -768,7 +986,7 @@ mod tests {
             Some(now + Duration::from_nanos(8_333_333))
         );
 
-        p.flush(now + Duration::from_millis(9), Seq::new(3));
+        p.flush(now + Duration::from_millis(9), Seq::new(3), 0);
         assert_eq!(p.next_flush_at(), None, "no idle ticks");
     }
 
@@ -779,7 +997,7 @@ mod tests {
         let now = settle(&mut p, C1, t0, 1);
 
         p.record_resize(100, 40);
-        let out = p.flush(now, Seq::new(2));
+        let out = p.flush(now, Seq::new(2), 0);
         match &out[0].kind {
             EmissionKind::Delta { dirty, resized, .. } => {
                 assert_eq!(*resized, Some((100, 40)));
@@ -797,13 +1015,13 @@ mod tests {
         let now = settle2(&mut p, t0);
 
         p.force_snapshot_all();
-        let out = p.flush(now, Seq::new(2));
+        let out = p.flush(now, Seq::new(2), 0);
         assert_eq!(out.len(), 2);
         assert!(out.iter().all(|e| e.kind == EmissionKind::Snapshot));
     }
 
     fn settle2(p: &mut Publisher, now: Instant) -> Instant {
-        p.flush(now, Seq::new(1));
+        p.flush(now, Seq::new(1), 0);
         p.ack(C1, Seq::new(1), now);
         p.ack(C2, Seq::new(1), now);
         now + Duration::from_millis(20)
@@ -816,7 +1034,7 @@ mod tests {
         let mut now = settle(&mut p, C1, t0, 1);
 
         p.record_damage(&dirty(10, &[0]));
-        p.flush(now, Seq::new(2));
+        p.flush(now, Seq::new(2), 0);
         assert!(p.silent_clients(now).is_empty());
 
         now += Duration::from_secs(29);
@@ -838,6 +1056,6 @@ mod tests {
         assert!(p.is_empty());
         p.record_damage(&dirty(10, &[0]));
         assert!(!p.has_pending());
-        assert!(p.flush(t0, Seq::new(2)).is_empty());
+        assert!(p.flush(t0, Seq::new(2), 0).is_empty());
     }
 }

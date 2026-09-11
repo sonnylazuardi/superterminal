@@ -310,6 +310,10 @@ fn handle(ctx: &DataCtx, client: CoreClientId, attached: &mut BTreeSet<SurfaceId
 
 /// `Attach` (§6). The first frame is always a Snapshot, which is a superset of
 /// what `want_snapshot` / `known_seq` ask for.
+///
+/// A repeated `Attach` from an already-attached Client is not an error: it is
+/// a Resync (ADR 0011, A-Q8) — the attachment is kept, the new mode is
+/// honoured, and the answer is a fresh Snapshot.
 fn on_attach(
     ctx: &DataCtx,
     client: CoreClientId,
@@ -319,15 +323,30 @@ fn on_attach(
     let Some(slot) = ctx.supervisor.slot(msg.surface_id) else {
         return unknown_surface(ctx, client, msg.surface_id);
     };
-    let accepted = slot.lock().attach(client, msg.mode, Instant::now());
-    if !accepted {
-        return send_error(
-            ctx,
-            client,
-            Some(msg.surface_id),
-            DATA_ERR_BAD_REQUEST,
-            format!("already attached to surface {}", msg.surface_id),
+    let now = Instant::now();
+    let resynced = {
+        let mut surface = slot.lock();
+        if surface.attach(client, msg.mode, now) {
+            false
+        } else {
+            let resynced = surface.resync(client, msg.mode, now);
+            debug_assert!(resynced, "attach failed only when already attached");
+            true
+        }
+    };
+    if resynced {
+        if let Some(metrics) = ctx.supervisor.metrics() {
+            metrics.resyncs.inc();
+        }
+        tracing::debug!(
+            surface = %msg.surface_id,
+            mode = ?msg.mode,
+            want_snapshot = msg.want_snapshot,
+            known_seq = %msg.known_seq,
+            resync = true,
+            "re-attached; answering with a Snapshot"
         );
+        return;
     }
     attached.insert(msg.surface_id);
     tracing::debug!(
