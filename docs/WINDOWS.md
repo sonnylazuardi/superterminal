@@ -45,6 +45,19 @@ bun install
    ```
    Only loopback addresses are accepted; TCP peers carry no uid credential,
    so a non-loopback `--tcp` is refused at start-up.
+   Closing the terminal that started the daemon does NOT stop it when it was
+   launched detached (`--daemonize`, `setsid`, or the Startup entry below) —
+   but a WSL restart or `wsl --shutdown` stops everything, daemon included.
+   For a daemon that is simply there at logon, a hidden Startup entry runs
+   the release binary detached (no admin rights needed, no console flash):
+   `shell:startup` → `superterminal-daemon.vbs` with
+   ```vbs
+   CreateObject("Wscript.Shell").Run "C:\Windows\System32\wsl.exe -d Ubuntu --exec /home/sonny/projects/superterminal/target/release/superterminald --tcp 127.0.0.1:7171 --daemonize", 0, False
+   ```
+   (adjust the distro and the checkout path). A second daemon started while
+   one owns the socket/TCP port exits cleanly, so a stale entry can never
+   steal the server. If the app ever shows "Failed to connect", the daemon
+   is down: check `wsl -l -v` (the distro must be Running) and restart it.
    Start it with a **clean environment**: surfaces inherit the daemon's
    environment, so exported `XDG_*` overrides leak into every shell. To
    isolate a trial daemon, use the flags — never the env:
