@@ -7,6 +7,7 @@ import {
   isTestEnvironment,
   locateServerBinary,
   probeSocket,
+  wslDaemonCommand,
 } from './ensure.js';
 import {
   defaultSocketPath,
@@ -137,6 +138,94 @@ describe('TCP ensure', () => {
     expect(err?.kind).toBe('not_running');
     expect(err?.message).toContain('WSL');
     expect(spawned).toBe(0);
+  });
+
+  test('on Windows the client starts the daemon through a hidden wsl.exe', async () => {
+    let probes = 0;
+    const spawns: string[][] = [];
+    const sleeps: number[] = [];
+    const result = await ensureServer({
+      socketPath: 'tcp://127.0.0.1:7171',
+      platform: 'win32',
+      allowSpawnInTests: true,
+      env: {
+        SystemRoot: 'C:\\Windows',
+        SUPERTERMINAL_SERVER: '/home/me/superterminald',
+        SUPERTERMINAL_WSL_DISTRO: 'Ubuntu',
+      },
+      probe: async () => ++probes > 2,
+      sleep: async (ms) => {
+        sleeps.push(ms);
+      },
+      spawn: (bin, args = []) => {
+        spawns.push([bin, ...args]);
+        return { pid: 77, unref: () => {}, exited: new Promise(() => {}) };
+      },
+    });
+    expect(spawns).toEqual([
+      [
+        'C:\\Windows\\System32\\wsl.exe',
+        '-d',
+        'Ubuntu',
+        '--exec',
+        '/home/me/superterminald',
+        '--tcp',
+        '127.0.0.1:7171',
+      ],
+    ]);
+    expect(result).toEqual({ socketPath: 'tcp://127.0.0.1:7171', spawned: true, pid: 77 });
+    // One probe of the candidate list, then two inside the WSL retry loop.
+    expect(sleeps).toEqual([500]);
+  });
+
+  test('wsl.exe exiting early fails fast with a typed error', async () => {
+    let probes = 0;
+    const err = await ensureServer({
+      socketPath: 'tcp://127.0.0.1:7171',
+      platform: 'win32',
+      allowSpawnInTests: true,
+      env: {},
+      probe: async () => {
+        probes += 1;
+        return false;
+      },
+      sleep: async () => {},
+      spawn: () => ({ pid: 78, unref: () => {}, exited: Promise.resolve(1) }),
+    }).then(
+      () => null,
+      (e) => e as ServerUnavailableError,
+    );
+    expect(err?.kind).toBe('spawn_failed');
+    expect(err?.message).toContain('exited with code 1');
+    expect(err?.message).toContain('SUPERTERMINAL_SERVER');
+    expect(probes).toBeLessThan(5);
+  });
+
+  test('on Windows --no-spawn still refuses to start anything', async () => {
+    let spawned = 0;
+    const err = await ensureServer({
+      socketPath: 'tcp://127.0.0.1:1',
+      platform: 'win32',
+      noSpawn: true,
+      probeTimeoutMs: 50,
+      spawn: () => {
+        spawned += 1;
+        return { pid: 1, unref: () => {} };
+      },
+    }).then(
+      () => null,
+      (e) => e as ServerUnavailableError,
+    );
+    expect(err?.kind).toBe('not_running');
+    expect(spawned).toBe(0);
+  });
+
+  test('wslDaemonCommand defaults to the default distro and $PATH', () => {
+    expect(wslDaemonCommand('tcp://127.0.0.1:7171', {})).toEqual({
+      bin: 'wsl.exe',
+      args: ['--exec', 'superterminald', '--tcp', '127.0.0.1:7171'],
+    });
+    expect(wslDaemonCommand('/not/tcp', {})).toBeNull();
   });
 
   test('a live TCP listener is returned as-is', async () => {

@@ -133,7 +133,10 @@ export function bootstrap(options: BootstrapOptions): Bootstrapped {
 /** Push every control-plane event and connection change into the store. */
 export function wireClientToStore(client: ControlClient, store: WorkspaceStore): () => void {
   const offEvent = client.on((event) => store.applyEvent(event));
+  let previous = client.state;
   const offState = client.onStateChange((state, error) => {
+    const before = previous;
+    previous = state;
     switch (state) {
       case 'connected': {
         const info = client.serverInfo;
@@ -142,6 +145,10 @@ export function wireClientToStore(client: ControlClient, store: WorkspaceStore):
           status: 'connected',
           ...(info ? { serverVersion: info.protoVersion, serverBuildId: info.buildId } : {}),
         });
+        // A reconnect is a fresh control connection: the server knows nothing
+        // about the old subscription, so re-subscribe or the projection stays
+        // frozen (and empty after a "Failed to connect" start).
+        if (before === 'reconnecting') void subscribe(client, store);
         return;
       }
       case 'connecting':
@@ -190,14 +197,23 @@ export async function connect(
   }
   try {
     await client.connect();
-    const snapshot = await client.request('workspace.subscribe', {});
-    store.applySnapshot(snapshot);
+    await subscribe(client, store);
   } catch (err) {
     const error = err as Error;
-    store.dispatch({
-      type: 'connection.set',
-      status: error.name === 'VersionMismatchError' ? 'mismatch' : 'failed',
-      error: error.message,
-    });
+    // The client keeps retrying on its own (backoff, `onRepeatedFailure`);
+    // show that rather than a dead-end "Failed to connect".
+    const status =
+      error.name === 'VersionMismatchError'
+        ? 'mismatch'
+        : client.state === 'reconnecting'
+          ? 'reconnecting'
+          : 'failed';
+    store.dispatch({ type: 'connection.set', status, error: error.message });
   }
+}
+
+/** Subscribe and seed the projection from the snapshot. Throws on failure. */
+async function subscribe(client: ControlClient, store: WorkspaceStore): Promise<void> {
+  const snapshot = await client.request('workspace.subscribe', {});
+  store.applySnapshot(snapshot);
 }

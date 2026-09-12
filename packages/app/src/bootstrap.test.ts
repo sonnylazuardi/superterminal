@@ -87,6 +87,51 @@ describe('client → store wiring', () => {
     expect(selectActiveSurface(store.getState())!.id).toBe(101);
   });
 
+  test('an automatic reconnect re-subscribes so the projection comes back', async () => {
+    let subscribes = 0;
+    const server = await startFakeServer({
+      onRequest(message, conn) {
+        subscribes += 1;
+        conn.send({
+          t: 'ok',
+          id: message['id'],
+          result: { ...snapshot, workspace: { ...snapshot.workspace, revision: 4 + subscribes } },
+        });
+      },
+    });
+    servers.push(server);
+    const store = createWorkspaceStore();
+    const client = new ControlClient({
+      socketPath: server.socketPath,
+      reconnect: true,
+      backoff: { initialMs: 10, maxMs: 20 },
+    });
+    clients.push(client);
+    wireClientToStore(client, store);
+    await connect(client, store, { noSpawn: true, socket: server.socketPath });
+    expect(store.getState().revision).toBe(5);
+
+    server.dropConnections();
+    await waitFor(() => store.getState().connection.status === 'reconnecting');
+    await waitFor(() => store.getState().connection.status === 'connected');
+    await waitFor(() => store.getState().revision === 6);
+    expect(subscribes).toBe(2);
+  });
+
+  test('a server that is not there yet shows "reconnecting" while the client retries', async () => {
+    const store = createWorkspaceStore();
+    const client = new ControlClient({
+      socketPath: '/tmp/st-not-there-4712.sock',
+      reconnect: true,
+      backoff: { initialMs: 10, maxMs: 20 },
+    });
+    clients.push(client);
+    wireClientToStore(client, store);
+    await connect(client, store, { noSpawn: true, socket: '/tmp/st-not-there-4712.sock' });
+    expect(store.getState().connection.status).toBe('reconnecting');
+    expect(store.getState().connection.error).toBeTruthy();
+  });
+
   test('an unreachable server leaves a failed connection, not an exception', async () => {
     const store = createWorkspaceStore();
     const client = new ControlClient({

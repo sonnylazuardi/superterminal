@@ -15,7 +15,7 @@
  */
 
 import { existsSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, win32 } from 'node:path';
 import { debug } from '../util/debug.js';
 import {
   defaultSocketPath,
@@ -46,6 +46,20 @@ export class ServerUnavailableError extends Error {
   }
 }
 
+/** What a spawn returns: enough to log, detach, and notice an early exit. */
+export interface SpawnedServer {
+  pid: number;
+  unref(): void;
+  /** Resolves with the exit code once the process is gone (optional). */
+  exited?: Promise<number>;
+}
+
+/**
+ * Windows: the distro to run the daemon in (`wsl.exe -d <name>`); unset means
+ * the default distro.
+ */
+export const WSL_DISTRO_ENV_VAR = 'SUPERTERMINAL_WSL_DISTRO';
+
 export interface EnsureServerOptions extends PathEnv {
   /** Explicit socket (`--socket`). */
   socketPath?: string;
@@ -56,7 +70,7 @@ export interface EnsureServerOptions extends PathEnv {
   retryEveryMs?: number;
   /** Injectable for tests. */
   probe?: (path: string, timeoutMs: number) => Promise<boolean>;
-  spawn?: (bin: string) => { pid: number; unref(): void };
+  spawn?: (bin: string, args?: string[]) => SpawnedServer;
   exists?: (path: string) => boolean;
   which?: (bin: string) => string | null;
   execPath?: string;
@@ -140,15 +154,133 @@ export function locateServerBinary(options: EnsureServerOptions = {}): string | 
   return which(SERVER_BINARY);
 }
 
-function defaultSpawn(bin: string): { pid: number; unref(): void } {
-  const proc = Bun.spawn([bin], {
+function defaultSpawn(bin: string, args: string[] = []): SpawnedServer {
+  const proc = Bun.spawn([bin, ...args], {
     stdio: ['ignore', 'ignore', 'ignore'],
     // A new process group so the daemon survives the terminal that launched
     // the client. Confirmed against Bun 1.4's spawn options.
     detached: true,
+    // The client is a GUI-subsystem exe on Windows: without this, a console
+    // child (wsl.exe) would pop a black window.
+    windowsHide: true,
   });
   proc.unref();
-  return { pid: proc.pid, unref: () => proc.unref() };
+  return { pid: proc.pid, unref: () => proc.unref(), exited: proc.exited };
+}
+
+/**
+ * The command that starts the daemon inside WSL from the Windows client.
+ *
+ * WSL kills every process of a `wsl.exe` session the moment that `wsl.exe`
+ * exits — `--daemonize`, `setsid` and `nohup` all die with it (verified on
+ * WSL 2.7). So the daemon is run *attached*, in the foreground of a hidden
+ * `wsl.exe` that simply stays alive for as long as the daemon does; a
+ * detached child outlives the client on Windows.
+ *
+ * `$SUPERTERMINAL_SERVER` is the daemon's path *inside* the distro (default:
+ * `superterminald` on WSL's default PATH); `$SUPERTERMINAL_WSL_DISTRO` picks
+ * the distro.
+ */
+export function wslDaemonCommand(
+  tcpTarget: string,
+  env: Record<string, string | undefined> = process.env as Record<string, string | undefined>,
+): { bin: string; args: string[] } | null {
+  const tcp = parseTcpTarget(tcpTarget);
+  if (!tcp) return null;
+  const systemRoot = env['SystemRoot'] ?? env['SYSTEMROOT'];
+  const bin = systemRoot ? win32.join(systemRoot, 'System32', 'wsl.exe') : 'wsl.exe';
+  const distro = env[WSL_DISTRO_ENV_VAR];
+  const daemon = env['SUPERTERMINAL_SERVER'] || SERVER_BINARY;
+  return {
+    bin,
+    args: [
+      ...(distro ? ['-d', distro] : []),
+      '--exec',
+      daemon,
+      '--tcp',
+      `${tcp[0]}:${tcp[1]}`,
+    ],
+  };
+}
+
+/** One WSL boot at a time per target: repeated reconnects share the wait. */
+const inflightWsl = new Map<string, Promise<EnsureServerResult>>();
+
+/** Cold WSL boots take a while; probe for this long after spawning wsl.exe. */
+export const WSL_RETRY_FOR_MS = 30_000;
+export const WSL_RETRY_EVERY_MS = 500;
+
+async function ensureWslServer(
+  tcpTarget: string,
+  options: EnsureServerOptions,
+  env: Record<string, string | undefined>,
+): Promise<EnsureServerResult> {
+  const existing = inflightWsl.get(tcpTarget);
+  if (existing) return existing;
+  const run = (async () => {
+    const probe = options.probe ?? probeSocket;
+    const probeTimeoutMs = options.probeTimeoutMs ?? 500;
+    const sleep = options.sleep ?? defaultSleep;
+    const command = wslDaemonCommand(tcpTarget, env);
+    if (!command) {
+      throw new ServerUnavailableError('not_running', `bad TCP target ${tcpTarget}`, tcpTarget, [
+        tcpTarget,
+      ]);
+    }
+
+    let child: SpawnedServer;
+    try {
+      child = (options.spawn ?? defaultSpawn)(command.bin, command.args);
+      log(`spawned ${command.bin} ${command.args.join(' ')} (pid ${child.pid})`);
+    } catch (err) {
+      throw new ServerUnavailableError(
+        'spawn_failed',
+        `could not start ${command.bin}: ${(err as Error).message}`,
+        tcpTarget,
+        [tcpTarget],
+      );
+    }
+
+    // wsl.exe stays up while the daemon runs, so an early exit means the
+    // daemon could not start (bad path, WSL error) — fail fast with the code.
+    let exitCode: number | null = null;
+    void child.exited?.then((code) => {
+      exitCode = code;
+    });
+
+    const retryForMs = options.retryForMs ?? WSL_RETRY_FOR_MS;
+    const retryEveryMs = options.retryEveryMs ?? WSL_RETRY_EVERY_MS;
+    const attempts = Math.max(1, Math.ceil(retryForMs / retryEveryMs));
+    for (let i = 0; i < attempts; i++) {
+      if (await probe(tcpTarget, probeTimeoutMs)) {
+        return { socketPath: tcpTarget, spawned: true, pid: child.pid };
+      }
+      if (exitCode !== null) {
+        throw new ServerUnavailableError(
+          'spawn_failed',
+          `${command.bin} exited with code ${exitCode} before ${SERVER_BINARY} answered on ` +
+            `${tcpTarget} (daemon: ${command.args[command.args.indexOf('--exec') + 1]}; ` +
+            `set $SUPERTERMINAL_SERVER to its path inside WSL)`,
+          tcpTarget,
+          [tcpTarget],
+        );
+      }
+      await sleep(retryEveryMs);
+    }
+    throw new ServerUnavailableError(
+      'timeout',
+      `${SERVER_BINARY} (via ${command.bin}, pid ${child.pid}) did not answer on ${tcpTarget} ` +
+        `within ${retryForMs} ms`,
+      tcpTarget,
+      [tcpTarget],
+    );
+  })();
+  inflightWsl.set(tcpTarget, run);
+  try {
+    return await run;
+  } finally {
+    inflightWsl.delete(tcpTarget);
+  }
 }
 
 const defaultSleep = (ms: number) => Bun.sleep(ms);
@@ -213,12 +345,25 @@ export async function ensureServer(
     }
   }
 
-  // 1b. A TCP target means the server lives in WSL: there is no local binary
-  // to spawn (and spawning a Linux daemon from Windows is meaningless), so a
-  // failed probe is a hard error with the fix attached.
+  // 1b. A TCP target means the server lives in WSL. On Windows the client
+  // boots WSL and starts the daemon itself through a hidden wsl.exe (see
+  // `wslDaemonCommand`); anywhere else there is nothing to spawn, so a failed
+  // probe is a hard error with the fix attached.
   const only = candidates.length === 1 ? candidates[0] : undefined;
   const tcpTarget = only !== undefined && isTcpTarget(only) ? only : null;
   if (tcpTarget) {
+    const platform = options.platform ?? process.platform;
+    if (platform === 'win32' && !options.noSpawn) {
+      if (isTestEnvironment(env) && !options.allowSpawnInTests) {
+        throw new ServerUnavailableError(
+          'not_running',
+          `no server on ${tcpTarget}; refusing to spawn wsl.exe from a test run`,
+          tcpTarget,
+          candidates,
+        );
+      }
+      return ensureWslServer(tcpTarget, options, env);
+    }
     throw new ServerUnavailableError(
       'not_running',
       `no server on ${tcpTarget}; start one in WSL first: ` +

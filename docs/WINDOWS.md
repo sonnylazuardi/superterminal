@@ -39,31 +39,55 @@ bun install
 
 ## Run
 
-1. In WSL, start (or reuse) a daemon with a TCP listener:
+1. Nothing to start by hand: when nothing answers on the TCP target, the
+   Windows client boots WSL and starts the daemon itself, through a hidden
+   `wsl.exe`, and keeps probing for up to 30 s (a cold WSL boot). It runs
+   ```
+   %SystemRoot%\System32\wsl.exe [-d %SUPERTERMINAL_WSL_DISTRO%] --exec %SUPERTERMINAL_SERVER% --tcp 127.0.0.1:7171
+   ```
+   so set the **user** environment variable `SUPERTERMINAL_SERVER` to the
+   daemon's path *inside the distro* (default: `superterminald` on WSL's
+   default PATH, i.e. `/usr/local/bin`), and `SUPERTERMINAL_WSL_DISTRO` if
+   the daemon is not in the default distro:
+   ```bat
+   setx SUPERTERMINAL_SERVER /home/<you>/superterminal/target/release/superterminald
+   ```
+   **Why the daemon is run attached, not `--daemonize`d**: WSL kills every
+   process of a `wsl.exe` session the moment that `wsl.exe` exits —
+   `--daemonize`, `setsid` and `nohup` all die with it (verified on WSL
+   2.7.13; `systemd-run --user` survives but needs the user manager). The
+   hidden `wsl.exe` therefore stays alive for as long as the daemon does; it
+   is detached from the client, so closing the app leaves the daemon (and
+   the WSL VM) running until `[server].idle_exit_minutes` elapses. A second
+   daemon started while one owns the port exits cleanly, so a client, a
+   Startup entry and a shell can all "start" it without stealing the server.
+   The client also keeps reconnecting (backoff, at most every 4 s) and
+   re-subscribes on every reconnect, so a daemon that comes back later —
+   or a WSL VM that died after sleep/hibernate — is picked up without a
+   click.
+   To start it by hand instead (or for a second, isolated daemon):
    ```bash
    superterminald --tcp 127.0.0.1:7171
    ```
    Only loopback addresses are accepted; TCP peers carry no uid credential,
-   so a non-loopback `--tcp` is refused at start-up.
-   Closing the terminal that started the daemon does NOT stop it when it was
-   launched detached (`--daemonize`, `setsid`, or the Startup entry below) —
-   but a WSL restart or `wsl --shutdown` stops everything, daemon included.
-   For a daemon that is simply there at logon, a hidden Startup entry runs
-   the release binary detached (no admin rights needed, no console flash):
+   so a non-loopback `--tcp` is refused at start-up. `wsl --shutdown`, a
+   Windows restart and (often) sleep/hibernate stop the VM and everything
+   in it, daemon included; the client restarts it on the next launch.
+   For a daemon that is already warm at logon (saves the WSL boot), a hidden
+   Startup entry keeps a `wsl.exe` alive around an attached daemon:
    `shell:startup` → `superterminal-daemon.vbs` with
    ```vbs
-   CreateObject("Wscript.Shell").Run "C:\Windows\System32\wsl.exe -d Ubuntu --exec /home/sonny/projects/superterminal/target/release/superterminald --tcp 127.0.0.1:7171 --daemonize", 0, False
+   CreateObject("Wscript.Shell").Run "C:\Windows\System32\wsl.exe -d Ubuntu --exec /home/sonny/projects/superterminal/target/release/superterminald --tcp 127.0.0.1:7171 --no-idle-exit", 0, False
    ```
-   (adjust the distro and the checkout path). A second daemon started while
-   one owns the socket/TCP port exits cleanly, so a stale entry can never
-   steal the server. If the app ever shows "Failed to connect", the daemon
-   is down: check `wsl -l -v` (the distro must be Running) and restart it.
-   Start it with a **clean environment**: surfaces inherit the daemon's
-   environment, so exported `XDG_*` overrides leak into every shell. To
-   isolate a trial daemon, use the flags — never the env:
+   (adjust the distro and the path; `--no-idle-exit` because a logon daemon
+   that quits after 15 idle minutes is not there when the app opens; no
+   `--daemonize`, see above; no admin rights, no console flash).
+   Start any daemon with a **clean environment**: surfaces inherit the
+   daemon's environment, so exported `XDG_*` overrides leak into every
+   shell. To isolate a trial daemon, use the flags — never the env:
    ```bash
    superterminald --socket /tmp/st-win/server.sock \
-     --state-dir /tmp/st-win/state --tcp 127.0.0.1:7171 --no-idle-exit
+     --state-dir /tmp/st-win/state --tcp 127.0.0.1:7172 --no-idle-exit
    ```
    (A daemon started under `XDG_STATE_HOME=/tmp/...` once broke `opencode2`
    service discovery in all its shells: the client looked for its service
@@ -77,8 +101,8 @@ bun install
    ```
    `SUPERTERMINAL_TCP` turns every socket path in the app into
    `tcp://127.0.0.1:7171` (control plane, data plane pre-warm and
-   `<terminal-grid>`); the daemon is never spawned from Windows. `--tcp
-   127.0.0.1:7171` on the app command line is equivalent.
+   `<terminal-grid>`). `--tcp 127.0.0.1:7171` on the app command line is
+   equivalent; `--no-spawn` keeps the client from starting wsl.exe.
 
 ## Packaged builds (exe + MSI)
 
@@ -126,8 +150,8 @@ admin). The full chain, all on Windows:
                          rem superterminal-native.win32-x64-msvc.node,
                          rem superterminal.ico, Product.wxs
    candle.exe Product.wxs -o obj\
-   light.exe obj\Product.wixobj -o Superterminal-0.1.9.msi
-   msiexec /i Superterminal-0.1.9.msi /passive
+   light.exe obj\Product.wixobj -o Superterminal-0.1.10.msi
+   msiexec /i Superterminal-0.1.10.msi /passive
    ```
    `Product.wxs` registers `superterminal.ico` as the Start Menu shortcut
    icon and the Apps & features (`ARPPRODUCTICON`) entry.
