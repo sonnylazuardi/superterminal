@@ -3,6 +3,7 @@ import type { ReqParams, RequestType, WorkspaceSnapshot } from '@superterminal/p
 import { resolveBinding } from '../platform/keys.js';
 import type { WorkspaceState } from '../state/types.js';
 import { createWorkspaceStore, type WorkspaceStore } from '../state/workspace-store.js';
+import { closeExitedPane } from './defaults.js';
 import { buildRegistry, filterCommands, fuzzyScore, matchKeybinding } from './registry.js';
 import type { CommandContext, ControlClientLike, NativeBridge } from './types.js';
 import { noopNativeBridge } from './types.js';
@@ -273,6 +274,37 @@ describe('pane commands (ADR 0009)', () => {
     await registry.run('pane.close', ctx);
     expect(sent).toHaveLength(2);
     expect(store.getState().ui.confirmingCloseTabId).toBeNull();
+  });
+
+  test('closeExitedPane dismisses an Exited Pane and ignores a running one (Q22)', async () => {
+    const { ctx, sent, store } = harness({ split: true });
+    // Running: Enter/click on a live Pane must never close it.
+    await closeExitedPane(ctx, 10, 100);
+    expect(sent).toHaveLength(0);
+    store.applySnapshot({
+      ...splitSnapshot,
+      surfaces: splitSnapshot.surfaces.map((s) =>
+        s.id === 100 ? { ...s, state: { kind: 'exited' as const, code: 0, signal: null } } : s,
+      ),
+    });
+    await closeExitedPane(ctx, 10, 100);
+    expect(sent).toEqual([{ type: 'pane.close', params: { tab: 10, pane: 100 } }]);
+    expect(store.getState().ui.focusedPaneByTab[10]).toBe(102);
+    // A Surface that is not one of the Tab's Panes is ignored too.
+    await closeExitedPane(ctx, 11, 100);
+    expect(sent).toHaveLength(1);
+  });
+
+  test('closeExitedPane on the last Pane closes the Tab', async () => {
+    const { ctx, sent, store } = harness();
+    store.applySnapshot({
+      ...snapshot,
+      surfaces: snapshot.surfaces.map((s) =>
+        s.id === 100 ? { ...s, state: { kind: 'exited' as const, code: 130, signal: null } } : s,
+      ),
+    });
+    await closeExitedPane(ctx, 10, 100);
+    expect(sent).toEqual([{ type: 'tab.close', params: { tab: 10 } }]);
   });
 
   test('Close Tab confirms when ANY Pane has a foreground child', async () => {

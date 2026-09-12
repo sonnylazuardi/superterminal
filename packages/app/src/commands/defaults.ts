@@ -125,18 +125,9 @@ export const COMMAND_DEFINITIONS: CommandDefinition[] = [
       const state = ctx.store.getState();
       const tab = tabFromArg(state, arg);
       if (!tab) return;
-      // The last Pane closing IS the Tab closing, confirmation included.
-      if (tab.surfaceIds.length <= 1) {
-        await closeTab(ctx, tab);
-        return;
-      }
       const pane = selectFocusedSurfaceId(state, tab.id);
       if (pane === null) return;
-      // Hand focus to the surviving sibling before the Pane goes, so the
-      // snapshot that removes it never lands on a Tab with stale focus.
-      const sibling = siblingLeaf(tab.layout, pane);
-      if (sibling !== null) ctx.store.dispatch({ type: 'pane.focus', tabId: tab.id, surfaceId: sibling });
-      await ctx.client.request('pane.close', { tab: tab.id, pane });
+      await closePane(ctx, tab, pane);
     },
   },
   {
@@ -342,6 +333,33 @@ async function closeTab(ctx: CommandContext, tab: TabView | null): Promise<void>
   }
   ctx.store.dispatch({ type: 'tab.confirmClose', tabId: null });
   await ctx.client.request('tab.close', { tab: tab.id });
+}
+
+/** Close one Pane of a Tab; closing the last Pane is closing the Tab. */
+export async function closePane(ctx: CommandContext, tab: TabView, pane: number): Promise<void> {
+  // The last Pane closing IS the Tab closing, confirmation included.
+  if (tab.surfaceIds.length <= 1) {
+    await closeTab(ctx, tab);
+    return;
+  }
+  // Hand focus to the surviving sibling before the Pane goes, so the
+  // snapshot that removes it never lands on a Tab with stale focus.
+  const sibling = siblingLeaf(tab.layout, pane);
+  if (sibling !== null) ctx.store.dispatch({ type: 'pane.focus', tabId: tab.id, surfaceId: sibling });
+  await ctx.client.request('pane.close', { tab: tab.id, pane });
+}
+
+/**
+ * Q22: an Exited Surface stays on screen, readable, until the user presses
+ * Enter or clicks it. This is that dismissal. A no-op while the Surface is
+ * still running, so a stray Enter on a live Pane never closes anything.
+ */
+export async function closeExitedPane(ctx: CommandContext, tabId: number, surfaceId: number): Promise<void> {
+  const state = ctx.store.getState();
+  const tab = state.tabs[tabId];
+  if (!tab || !tab.surfaceIds.includes(surfaceId)) return;
+  if (state.surfaces[surfaceId]?.status !== 'exited') return;
+  await closePane(ctx, tab, surfaceId);
 }
 
 /** Split the Tab's focused Pane; the new Pane takes focus once created. */
