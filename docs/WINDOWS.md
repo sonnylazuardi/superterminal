@@ -155,8 +155,8 @@ admin). The full chain, all on Windows:
                          rem superterminal-native.win32-x64-msvc.node,
                          rem superterminal.ico, Product.wxs
    candle.exe Product.wxs -o obj\
-   light.exe obj\Product.wixobj -o Superterminal-0.1.11.msi
-   msiexec /i Superterminal-0.1.11.msi /passive
+   light.exe obj\Product.wixobj -o Superterminal-0.1.12.msi
+   msiexec /i Superterminal-0.1.12.msi /passive
    ```
    `Product.wxs` registers `superterminal.ico` as the Start Menu shortcut
    icon and the Apps & features (`ARPPRODUCTICON`) entry.

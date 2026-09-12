@@ -6,7 +6,7 @@
 # — all Xcode-only. GitHub-hosted macOS runners are free for this public repo.
 #
 # Usage: Actions → "macOS package" → Run workflow.
-#   ref:     what to build — a tag for releases (default v0.1.11), a branch
+#   ref:     what to build — a tag for releases (default v0.1.12), a branch
 #            for scratch builds. Submodules resolve to the pinned commits
 #            recorded at that ref, so a tag build is reproducible.
 #   publish: upload dist/*.dmg to the GitHub release named by `ref`.
@@ -29,7 +29,7 @@ on:
       ref:
         description: Tag or branch to build (submodule pins come from it)
         required: true
-        default: v0.1.11
+        default: v0.1.12
       publish:
         description: Attach the dmg to the GitHub release named by ref
         required: false
