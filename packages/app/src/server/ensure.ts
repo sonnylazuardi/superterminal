@@ -180,6 +180,18 @@ function defaultSpawn(bin: string, args: string[] = []): SpawnedServer {
  * `$SUPERTERMINAL_SERVER` is the daemon's path *inside* the distro (default:
  * `superterminald` on WSL's default PATH); `$SUPERTERMINAL_WSL_DISTRO` picks
  * the distro.
+ *
+ * `--no-idle-exit` is deliberate. This daemon is meant to be the *persistent*
+ * backend: it must outlive the app being closed and be warm when the app
+ * reopens. Without the flag it inherits `[server].idle_exit_minutes` (15 min
+ * by default) and quits after the app has been closed — or merely disconnected
+ * across a sleep/resume — for that long with no busy Surface. Re-opening then
+ * starts a *fresh* daemon, which re-seeds `workspace.json` with brand-new
+ * shells: the previous session's running programs and scrollback are gone.
+ * That is the "my session suddenly broke" report. The Startup entry
+ * (`docs/WINDOWS.md`) already runs the daemon with `--no-idle-exit` for the
+ * same reason; the client must spawn it the same way so behaviour does not
+ * depend on which one happened to win the port.
  */
 export function wslDaemonCommand(
   tcpTarget: string,
@@ -199,6 +211,7 @@ export function wslDaemonCommand(
       daemon,
       '--tcp',
       `${tcp[0]}:${tcp[1]}`,
+      '--no-idle-exit',
     ],
   };
 }

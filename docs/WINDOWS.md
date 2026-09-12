@@ -58,9 +58,14 @@ bun install
    2.7.13; `systemd-run --user` survives but needs the user manager). The
    hidden `wsl.exe` therefore stays alive for as long as the daemon does; it
    is detached from the client, so closing the app leaves the daemon (and
-   the WSL VM) running until `[server].idle_exit_minutes` elapses. A second
-   daemon started while one owns the port exits cleanly, so a client, a
-   Startup entry and a shell can all "start" it without stealing the server.
+   the WSL VM) running. The client spawns it with `--no-idle-exit`, so a
+   daemon it started does **not** quit after the app has been closed (or
+   merely disconnected across a sleep/resume) for `idle_exit_minutes`: were
+   it to quit, re-opening would start a fresh daemon that re-seeds
+   `workspace.json` with brand-new shells and the previous session's running
+   programs and scrollback would be lost. A second daemon started while one
+   owns the port exits cleanly, so a client, a Startup entry and a shell can
+   all "start" it without stealing the server.
    The client also keeps reconnecting (backoff, at most every 4 s) and
    re-subscribes on every reconnect, so a daemon that comes back later —
    or a WSL VM that died after sleep/hibernate — is picked up without a

@@ -171,6 +171,7 @@ describe('TCP ensure', () => {
         '/home/me/superterminald',
         '--tcp',
         '127.0.0.1:7171',
+        '--no-idle-exit',
       ],
     ]);
     expect(result).toEqual({ socketPath: 'tcp://127.0.0.1:7171', spawned: true, pid: 77 });
@@ -223,7 +224,7 @@ describe('TCP ensure', () => {
   test('wslDaemonCommand defaults to the default distro and $PATH', () => {
     expect(wslDaemonCommand('tcp://127.0.0.1:7171', {})).toEqual({
       bin: 'wsl.exe',
-      args: ['--exec', 'superterminald', '--tcp', '127.0.0.1:7171'],
+      args: ['--exec', 'superterminald', '--tcp', '127.0.0.1:7171', '--no-idle-exit'],
     });
     expect(wslDaemonCommand('/not/tcp', {})).toBeNull();
   });
