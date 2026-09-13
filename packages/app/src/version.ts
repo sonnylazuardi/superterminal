@@ -9,7 +9,7 @@
  * still override it at runtime for dev builds and scripted tests.
  */
 
-export const APP_VERSION = '0.1.15';
+export const APP_VERSION = '0.1.16';
 
 /** The project home, linked from the About dialog. */
 export const REPO_URL = 'https://github.com/sonnylazuardi/superterminal';

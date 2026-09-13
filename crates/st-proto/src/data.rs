@@ -257,7 +257,9 @@ bitflags::bitflags! {
         const FOCUS_EVENTS = 1 << 8;
         /// Auto-wrap (DECAWM).
         const LINE_WRAP = 1 << 9;
-        /// Kitty keyboard protocol; reserved, never emitted in 1.0.
+        /// Kitty keyboard protocol: an application has pushed at least the
+        /// "disambiguate" flag, so the client encodes modified Enter, Tab,
+        /// Backspace, Escape and Ctrl/Alt letters as `CSI u`.
         const KITTY_KEYBOARD = 1 << 10;
     }
 }

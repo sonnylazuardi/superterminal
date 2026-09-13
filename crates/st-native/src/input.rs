@@ -303,6 +303,43 @@ mod tests {
     }
 
     #[test]
+    fn cmd_enter_is_sent_as_a_newline_chord() {
+        let outcome = handle_key(
+            "enter",
+            None,
+            Mods::SUPER,
+            &PassthroughKeys::default(),
+            Modes::empty(),
+            &KeyConfig::default(),
+        );
+        assert_eq!(outcome, KeyOutcome::Send(b"\x1b\r".to_vec()));
+    }
+
+    #[test]
+    fn kitty_mode_reaches_the_encoder() {
+        let outcome = handle_key(
+            "enter",
+            None,
+            Mods::SHIFT,
+            &PassthroughKeys::default(),
+            Modes::KITTY_KEYBOARD,
+            &KeyConfig::default(),
+        );
+        assert_eq!(outcome, KeyOutcome::Send(b"\x1b[13;2u".to_vec()));
+        // Ctrl chords are indexed by the key name, not the control byte the
+        // platform puts in `key_char`.
+        let outcome = handle_key(
+            "c",
+            Some("\u{3}"),
+            Mods::CTRL,
+            &PassthroughKeys::default(),
+            Modes::KITTY_KEYBOARD,
+            &KeyConfig::default(),
+        );
+        assert_eq!(outcome, KeyOutcome::Send(b"\x1b[99;5u".to_vec()));
+    }
+
+    #[test]
     fn modifier_only_and_unknown_keys_are_ignored() {
         for key in ["ctrl", "shift", "capslock", "f99", "unknownkey"] {
             let outcome = handle_key(

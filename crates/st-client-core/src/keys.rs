@@ -41,6 +41,10 @@ bitflags::bitflags! {
     /// [`Mods::SUPER`] (Command on macOS, Super on Linux) never reaches the
     /// PTY: xterm has no encoding for it, so [`encode_key`] returns `None` and
     /// the chord bubbles up to the app's command registry (§7, grilling Q23).
+    /// The one exception is Cmd+Enter, the newline chord, which is sent as
+    /// Alt+Enter (`ESC CR`, or `CSI 13;3u` under the Kitty protocol) so line
+    /// editors that treat Meta+Enter as "insert newline" (Claude Code, fish,
+    /// …) do just that.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
     pub struct Mods: u8 {
         /// Shift.
@@ -172,9 +176,12 @@ pub struct KeyConfig {
     /// Backspace sends `DEL` (`0x7F`) rather than `BS` (`0x08`). This is the
     /// modern default; `Ctrl+Backspace` sends the other one, as in xterm.
     pub backspace_sends_del: bool,
-    /// Alt/Option prefixes the key with `ESC`. On macOS this is off by default
-    /// in the app config so Option can compose characters; the encoder itself
-    /// defaults to `true` because that is xterm's behaviour.
+    /// Alt/Option prefixes a *character* with `ESC`. On macOS this is off by
+    /// default in the app config so Option can compose characters; the encoder
+    /// itself defaults to `true` because that is xterm's behaviour. Keys that
+    /// produce no character (Enter, Tab, Escape, Backspace) are always
+    /// `ESC`-prefixed under Alt, since there is nothing to compose and
+    /// Option+Backspace / Option+Enter are what shells and line editors bind.
     pub alt_sends_esc: bool,
     /// Keep the trailing newline of a paste (xterm behaviour, §9).
     pub paste_keeps_trailing_newline: bool,
@@ -194,30 +201,44 @@ impl Default for KeyConfig {
 ///
 /// `None` means "not a terminal key": the caller must let the event propagate
 /// so the app's command registry can claim it (§7). That covers every chord
-/// holding [`Mods::SUPER`], unsupported function keys, and control characters
-/// with no xterm encoding.
+/// holding [`Mods::SUPER`] except Cmd+Enter (see [`Mods`]), unsupported
+/// function keys, and control characters with no xterm encoding.
 ///
-/// The `modes` that matter here are [`Modes::APP_CURSOR_KEYS`] (DECCKM) and
-/// [`Modes::APP_KEYPAD`] (DECPAM).
+/// The `modes` that matter here are [`Modes::APP_CURSOR_KEYS`] (DECCKM),
+/// [`Modes::APP_KEYPAD`] (DECPAM) and [`Modes::KITTY_KEYBOARD`], which
+/// switches the ambiguous keys to the Kitty protocol's `CSI u` form (see
+/// [`encode_kitty`]).
 #[must_use]
 pub fn encode_key(event: &KeyEvent, modes: Modes, config: &KeyConfig) -> Option<Vec<u8>> {
-    if event.mods.contains(Mods::SUPER) {
-        return None;
+    let mut mods = event.mods;
+    if mods.contains(Mods::SUPER) {
+        // Cmd+Enter is the newline chord; every other Super chord is the app's.
+        if !matches!(event.key, Key::Enter | Key::Keypad(Keypad::Enter)) {
+            return None;
+        }
+        mods.remove(Mods::SUPER);
+        mods.insert(Mods::ALT);
     }
-    let mods = event.mods;
+
+    if modes.contains(Modes::KITTY_KEYBOARD) {
+        if let Some(bytes) = encode_kitty(event.key, mods, config) {
+            return Some(bytes);
+        }
+    }
+
     let app_cursor = modes.contains(Modes::APP_CURSOR_KEYS);
 
     let bytes = match event.key {
         Key::Char(ch) => return encode_char(ch, mods, config),
 
-        Key::Enter => alt_prefixed(b"\r".to_vec(), mods, config),
+        Key::Enter => meta_prefixed(b"\r".to_vec(), mods),
         Key::Tab if mods.contains(Mods::SHIFT) => b"\x1b[Z".to_vec(),
-        Key::Tab => alt_prefixed(b"\t".to_vec(), mods, config),
-        Key::Escape => alt_prefixed(vec![ESC], mods, config),
+        Key::Tab => meta_prefixed(b"\t".to_vec(), mods),
+        Key::Escape => meta_prefixed(vec![ESC], mods),
         Key::Backspace => {
             // xterm: Ctrl inverts the DEL/BS choice.
             let del = config.backspace_sends_del != mods.contains(Mods::CTRL);
-            alt_prefixed(vec![if del { 0x7F } else { 0x08 }], mods, config)
+            meta_prefixed(vec![if del { 0x7F } else { 0x08 }], mods)
         }
 
         Key::Up => cursor_key(b'A', mods, app_cursor),
@@ -278,9 +299,65 @@ fn cursor_key(final_byte: u8, mods: Mods, app_cursor: bool) -> Vec<u8> {
     }
 }
 
-/// Prefixes `bytes` with `ESC` when Alt is held and configured to do so.
+/// The Kitty keyboard protocol's "disambiguate escape codes" encoding
+/// (flag `0b1`, the one every application that pushes the protocol sets).
+///
+/// The Server advertises the protocol and reports [`Modes::KITTY_KEYBOARD`]
+/// once an application has pushed it; from then on the keys whose legacy
+/// bytes are ambiguous go out as `CSI code;modifiers u`, where `modifiers` is
+/// the same `1 + shift·1 + alt·2 + ctrl·4` xterm uses. `None` means the key
+/// keeps its legacy encoding under this flag: plain Enter, Tab and Backspace
+/// (so `reset` still works after a crash), unmodified text, and every key
+/// whose legacy sequence already carries its modifiers (arrows, Home/End,
+/// function keys, the tilde keys).
+///
+/// The Client only knows *whether* the protocol is on, not which further
+/// flags were pushed, so this is deliberately the base flag alone.
+fn encode_kitty(key: Key, mods: Mods, config: &KeyConfig) -> Option<Vec<u8>> {
+    // Option that composes characters is not a modifier for text keys.
+    let text_mods = if config.alt_sends_esc {
+        mods
+    } else {
+        mods.difference(Mods::ALT)
+    };
+    let code: u32 = match key {
+        Key::Escape => 27,
+        // Kitty gives KP_Enter its own code (57414); reporting it as Enter
+        // keeps Cmd+Enter on the keypad a newline in editors that only know 13.
+        Key::Enter | Key::Keypad(Keypad::Enter) if !mods.is_plain() => 13,
+        Key::Tab if !mods.is_plain() => 9,
+        Key::Backspace if !mods.is_plain() => 127,
+        Key::Char(ch) if text_mods.intersects(Mods::CTRL | Mods::ALT) => {
+            // The unshifted key: Ctrl+Shift+c is `CSI 99;6u`, not `CSI 67;6u`.
+            ch.to_lowercase().next().unwrap_or(ch) as u32
+        }
+        _ => return None,
+    };
+    let mods = if matches!(key, Key::Char(_)) {
+        text_mods
+    } else {
+        mods
+    };
+    Some(if mods.is_plain() {
+        format!("\x1b[{code}u").into_bytes()
+    } else {
+        format!("\x1b[{code};{}u", mods.xterm_param()).into_bytes()
+    })
+}
+
+/// Prefixes a character's `bytes` with `ESC` when Alt is held and configured
+/// to act as Meta rather than compose.
 fn alt_prefixed(bytes: Vec<u8>, mods: Mods, config: &KeyConfig) -> Vec<u8> {
-    if mods.contains(Mods::ALT) && config.alt_sends_esc {
+    if config.alt_sends_esc {
+        meta_prefixed(bytes, mods)
+    } else {
+        bytes
+    }
+}
+
+/// Prefixes `bytes` with `ESC` when Alt is held.
+fn meta_prefixed(bytes: Vec<u8>, mods: Mods) -> Vec<u8> {
+    if mods.contains(Mods::ALT) {
         let mut out = Vec::with_capacity(bytes.len() + 1);
         out.push(ESC);
         out.extend_from_slice(&bytes);
@@ -339,7 +416,7 @@ fn encode_keypad(kp: Keypad, mods: Mods, modes: Modes, config: &KeyConfig) -> Op
     let ch = match kp {
         Keypad::Digit(d @ 0..=9) => (b'0' + d) as char,
         Keypad::Digit(_) => return None,
-        Keypad::Enter => return Some(alt_prefixed(b"\r".to_vec(), mods, config)),
+        Keypad::Enter => return Some(meta_prefixed(b"\r".to_vec(), mods)),
         Keypad::Plus => '+',
         Keypad::Minus => '-',
         Keypad::Multiply => '*',
@@ -559,6 +636,20 @@ mod tests {
             ),
             Some(b"x".to_vec())
         );
+        // Composing Option still acts as Meta on the keys that have nothing
+        // to compose: Option+Enter is a newline, Option+Backspace kills a word.
+        for (key, expected) in [
+            (Key::Enter, b"\x1b\r".to_vec()),
+            (Key::Backspace, vec![ESC, 0x7F]),
+            (Key::Tab, b"\x1b\t".to_vec()),
+            (Key::Escape, vec![ESC, ESC]),
+        ] {
+            assert_eq!(
+                encode_key(&KeyEvent::new(key, Mods::ALT), Modes::empty(), &no_alt),
+                Some(expected),
+                "{key:?}"
+            );
+        }
     }
 
     #[test]
@@ -569,6 +660,82 @@ mod tests {
             None
         );
         assert_eq!(enc(Key::Left, Mods::SUPER, Modes::empty()), None);
+        assert_eq!(enc(Key::Tab, Mods::SUPER, Modes::KITTY_KEYBOARD), None);
+    }
+
+    #[test]
+    fn cmd_enter_is_the_newline_chord() {
+        // Legacy: the Meta+Enter bytes, whatever the Option setting.
+        assert_eq!(
+            enc(Key::Enter, Mods::SUPER, Modes::empty()),
+            Some(b"\x1b\r".to_vec())
+        );
+        let no_alt = KeyConfig {
+            alt_sends_esc: false,
+            ..KeyConfig::default()
+        };
+        assert_eq!(
+            encode_key(&KeyEvent::new(Key::Enter, Mods::SUPER), Modes::empty(), &no_alt),
+            Some(b"\x1b\r".to_vec())
+        );
+        assert_eq!(
+            enc(Key::Keypad(Keypad::Enter), Mods::SUPER, Modes::empty()),
+            Some(b"\x1b\r".to_vec())
+        );
+        // Kitty: reported as Alt+Enter, never with the super bit.
+        assert_eq!(
+            s(Key::Enter, Mods::SUPER, Modes::KITTY_KEYBOARD),
+            "\x1b[13;3u"
+        );
+        assert_eq!(
+            s(Key::Enter, Mods::SUPER | Mods::SHIFT, Modes::KITTY_KEYBOARD),
+            "\x1b[13;4u"
+        );
+    }
+
+    #[test]
+    fn kitty_disambiguates_the_modified_editing_keys() {
+        let k = Modes::KITTY_KEYBOARD;
+        // Plain Enter, Tab and Backspace keep their legacy bytes.
+        assert_eq!(enc(Key::Enter, Mods::empty(), k), Some(b"\r".to_vec()));
+        assert_eq!(enc(Key::Tab, Mods::empty(), k), Some(b"\t".to_vec()));
+        assert_eq!(enc(Key::Backspace, Mods::empty(), k), Some(vec![0x7F]));
+        // Escape is always CSI u so it is never mistaken for an Alt prefix.
+        assert_eq!(s(Key::Escape, Mods::empty(), k), "\x1b[27u");
+        assert_eq!(s(Key::Escape, Mods::SHIFT, k), "\x1b[27;2u");
+        // Modified, they carry the modifier instead of being ambiguous.
+        assert_eq!(s(Key::Enter, Mods::SHIFT, k), "\x1b[13;2u");
+        assert_eq!(s(Key::Enter, Mods::ALT, k), "\x1b[13;3u");
+        assert_eq!(s(Key::Enter, Mods::CTRL, k), "\x1b[13;5u");
+        assert_eq!(s(Key::Tab, Mods::SHIFT, k), "\x1b[9;2u");
+        assert_eq!(s(Key::Tab, Mods::CTRL, k), "\x1b[9;5u");
+        assert_eq!(s(Key::Backspace, Mods::ALT, k), "\x1b[127;3u");
+        assert_eq!(s(Key::Backspace, Mods::CTRL, k), "\x1b[127;5u");
+        assert_eq!(s(Key::Keypad(Keypad::Enter), Mods::SHIFT, k), "\x1b[13;2u");
+    }
+
+    #[test]
+    fn kitty_disambiguates_control_and_alt_letters_only() {
+        let k = Modes::KITTY_KEYBOARD;
+        assert_eq!(enc(Key::Char('a'), Mods::empty(), k), Some(b"a".to_vec()));
+        assert_eq!(enc(Key::Char('A'), Mods::SHIFT, k), Some(b"A".to_vec()));
+        assert_eq!(s(Key::Char('c'), Mods::CTRL, k), "\x1b[99;5u");
+        assert_eq!(s(Key::Char('c'), Mods::CTRL | Mods::SHIFT, k), "\x1b[99;6u");
+        assert_eq!(s(Key::Char('x'), Mods::ALT, k), "\x1b[120;3u");
+        assert_eq!(s(Key::Char(' '), Mods::CTRL, k), "\x1b[32;5u");
+        // A composing Option is not a modifier: the glyph goes as text.
+        let no_alt = KeyConfig {
+            alt_sends_esc: false,
+            ..KeyConfig::default()
+        };
+        assert_eq!(
+            encode_key(&KeyEvent::new(Key::Char('ß'), Mods::ALT), k, &no_alt),
+            Some("ß".as_bytes().to_vec())
+        );
+        // Keys whose legacy form already carries modifiers are untouched.
+        assert_eq!(s(Key::Up, Mods::SHIFT, k), "\x1b[1;2A");
+        assert_eq!(s(Key::Function(5), Mods::CTRL, k), "\x1b[15;5~");
+        assert_eq!(s(Key::Up, Mods::empty(), k | Modes::APP_CURSOR_KEYS), "\x1bOA");
     }
 
     #[test]
