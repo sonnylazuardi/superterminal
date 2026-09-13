@@ -1165,6 +1165,32 @@ where
             let mut grid = state.borrow_mut();
             let mods = mods_from_gpui(event.keystroke.modifiers);
             let key = event.keystroke.key.clone();
+
+            // Windows Terminal parity (Q24): with a live selection, Ctrl+C
+            // copies it and clears the selection instead of interrupting —
+            // that is what a Windows user expects from `Ctrl+C`, and the
+            // explicit Copy shortcut is `Ctrl+Shift+C` here. With no
+            // selection this does nothing and the key falls through below to
+            // encode `^C` (SIGINT), so interrupt still works. macOS copies
+            // with Cmd+C and keeps Ctrl+C as interrupt; Linux keeps the
+            // unconditional `^C` too, so this is Windows-only.
+            #[cfg(target_os = "windows")]
+            if mods == Mods::CTRL
+                && key == "c"
+                && grid
+                    .selection
+                    .as_ref()
+                    .is_some_and(|selection| !selection.is_empty())
+            {
+                grid.copy(cx);
+                grid.selection = None;
+                grid.report_view_state(Trigger::SelectionEnd);
+                drop(grid);
+                cx.stop_propagation();
+                window.refresh();
+                return;
+            }
+
             let outcome = handle_key(
                 &key,
                 event.keystroke.key_char.as_deref(),
