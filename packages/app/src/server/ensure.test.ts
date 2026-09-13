@@ -4,10 +4,12 @@ import { startFakeServer, type FakeServer } from '../control/fake-server.js';
 import {
   ServerUnavailableError,
   ensureServer,
+  ensureWslKeepAlive,
   isTestEnvironment,
   locateServerBinary,
   probeSocket,
   wslDaemonCommand,
+  wslKeepAliveCommand,
 } from './ensure.js';
 import {
   defaultSocketPath,
@@ -227,6 +229,49 @@ describe('TCP ensure', () => {
       args: ['--exec', 'superterminald', '--tcp', '127.0.0.1:7171', '--no-idle-exit'],
     });
     expect(wslDaemonCommand('/not/tcp', {})).toBeNull();
+  });
+
+  test('wslKeepAliveCommand is a flocked singleton sleep session', () => {
+    expect(wslKeepAliveCommand({ SystemRoot: 'C:\\Windows', SUPERTERMINAL_WSL_DISTRO: 'Ubuntu' })).toEqual({
+      bin: 'C:\\Windows\\System32\\wsl.exe',
+      args: [
+        '-d',
+        'Ubuntu',
+        '--exec',
+        '/usr/bin/flock',
+        '-n',
+        '/tmp/superterminal-vm-keepalive.lock',
+        '/usr/bin/sleep',
+        '2147483647',
+      ],
+    });
+  });
+
+  test('ensureWslKeepAlive spawns only on win32 and never in a test env by default', () => {
+    const spawns: string[][] = [];
+    const spawn = (bin: string, args: string[] = []) => {
+      spawns.push([bin, ...args]);
+      return { pid: 1, unref: () => {}, exited: new Promise<number>(() => {}) };
+    };
+    // Not win32: no-op.
+    ensureWslKeepAlive({ platform: 'linux', env: {}, spawn, allowSpawnInTests: true });
+    expect(spawns).toHaveLength(0);
+    // win32 but a test env without the escape hatch: still a no-op.
+    ensureWslKeepAlive({ platform: 'win32', env: { NODE_ENV: 'test' }, spawn });
+    expect(spawns).toHaveLength(0);
+    // win32 with the escape hatch: spawns the keepalive.
+    ensureWslKeepAlive({ platform: 'win32', env: { SystemRoot: 'C:\\Windows' }, spawn, allowSpawnInTests: true });
+    expect(spawns).toEqual([
+      [
+        'C:\\Windows\\System32\\wsl.exe',
+        '--exec',
+        '/usr/bin/flock',
+        '-n',
+        '/tmp/superterminal-vm-keepalive.lock',
+        '/usr/bin/sleep',
+        '2147483647',
+      ],
+    ]);
   });
 
   test('a live TCP listener is returned as-is', async () => {

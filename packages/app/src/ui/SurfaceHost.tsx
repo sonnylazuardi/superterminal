@@ -218,6 +218,17 @@ function Pane(props: {
   const fontZoom = useWorkspace((s) => s.ui.fontZoom);
   const id = props.surfaceId;
   const tabId = props.tabId;
+
+  // `command` is a one-shot (copy/paste/clearScrollback) modelled as a
+  // monotonically increasing seq. The grid dedupes by seq, but a *fresh* grid
+  // has seen nothing, so it would re-run whatever command is currently latched
+  // in the bus. A grid is freshly mounted every time its tab becomes active
+  // (inactive tabs unmount their panes), so without this guard switching to a
+  // tab replays the last command that targeted its Surface — e.g. a previous
+  // paste re-fires and dumps the clipboard into the prompt on tab switch.
+  // Latch the bus seq at mount and only forward commands issued after it, so a
+  // one-shot stays one-shot across remounts.
+  const mountSeqRef = useRef<number>(commandBus.getSnapshot()?.seq ?? 0);
   const exit = useWorkspace((s) => {
     const surface = s.surfaces[id];
     return surface?.status === 'exited' ? (surface.exitSignal ?? String(surface.exitCode ?? 0)) : null;
@@ -309,7 +320,7 @@ function Pane(props: {
         scrollbar={config.terminal.scrollbar}
         padding={{ top: 4, right: 8, bottom: 4, left: 8 }}
         passthroughKeys={passthroughKeys}
-        {...(command && command.surfaceId === id
+        {...(command && command.surfaceId === id && command.seq > mountSeqRef.current
           ? { command: { seq: command.seq, name: command.name, args: command.args } }
           : {})}
         style={{ flexGrow: 1 }}

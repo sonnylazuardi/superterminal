@@ -15,7 +15,7 @@ import { EMPTY_CLIENT_STATE, loadClientState, type ClientState } from './state/c
 import { ControlClient } from './control/client.js';
 import { detectPlatform, type PlatformInfo } from './platform/detect.js';
 import { createCommandBus, createNativeBridge, type NativeCommandBus } from './native/bridge.js';
-import { ensureServer, ServerUnavailableError } from './server/ensure.js';
+import { ensureServer, ensureWslKeepAlive, ServerUnavailableError } from './server/ensure.js';
 import { defaultSocketPath } from './server/paths.js';
 import { createWorkspaceStore, getOrCreateGlobalStore, type WorkspaceStore } from './state/workspace-store.js';
 import { tokensFor, type Tokens } from './theme/tokens.js';
@@ -185,6 +185,11 @@ export async function connect(
   store: WorkspaceStore,
   argv: Pick<Argv, 'noSpawn' | 'socket'>,
 ): Promise<void> {
+  // Windows only: pin the WSL VM up with a hidden singleton session so the
+  // daemon (and its shells) survive the app — and every WSL terminal —
+  // closing, instead of the VM idling out ~60 s later and dropping the
+  // session. `--no-spawn` opts out of starting anything in WSL.
+  if (!argv.noSpawn) ensureWslKeepAlive();
   try {
     await ensureServer({ ...(argv.socket ? { socketPath: argv.socket } : {}), noSpawn: argv.noSpawn });
   } catch (err) {

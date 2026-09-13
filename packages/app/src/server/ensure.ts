@@ -216,6 +216,72 @@ export function wslDaemonCommand(
   };
 }
 
+/** flock file for the single VM-keepalive session (inside WSL). */
+const WSL_KEEPALIVE_LOCK = '/tmp/superterminal-vm-keepalive.lock';
+/** ~68 years; a `sleep` that, for all practical purposes, never returns. */
+const WSL_KEEPALIVE_SECONDS = '2147483647';
+
+/**
+ * Command that pins the WSL2 VM up with one long-lived, hidden session.
+ *
+ * WSL shuts the VM down ~60 s after the last *session* ends, and a detached
+ * background process (the daemon re-parented to init) does not count as one —
+ * so with no WSL terminal and the app closed, the VM idles out and the daemon
+ * dies with it. Reopening then starts a fresh daemon that re-seeds the
+ * workspace, and the previous session's shells and running programs are gone.
+ * A single `flock`ed `sleep` running as a real `wsl.exe --exec` session keeps
+ * the VM alive without a window; `flock -n` makes it a singleton, so relaunches
+ * (every app start) exit immediately instead of stacking.
+ *
+ * Windows only — the daemon lives in WSL solely there.
+ */
+export function wslKeepAliveCommand(
+  env: Record<string, string | undefined> = process.env as Record<string, string | undefined>,
+): { bin: string; args: string[] } {
+  const systemRoot = env['SystemRoot'] ?? env['SYSTEMROOT'];
+  const bin = systemRoot ? win32.join(systemRoot, 'System32', 'wsl.exe') : 'wsl.exe';
+  const distro = env[WSL_DISTRO_ENV_VAR];
+  return {
+    bin,
+    args: [
+      ...(distro ? ['-d', distro] : []),
+      '--exec',
+      '/usr/bin/flock',
+      '-n',
+      WSL_KEEPALIVE_LOCK,
+      '/usr/bin/sleep',
+      WSL_KEEPALIVE_SECONDS,
+    ],
+  };
+}
+
+export interface KeepAliveOptions {
+  env?: Record<string, string | undefined>;
+  platform?: NodeJS.Platform;
+  spawn?: (bin: string, args?: string[]) => SpawnedServer;
+  allowSpawnInTests?: boolean;
+}
+
+/**
+ * Fire-and-forget: keep the WSL VM warm so the daemon (and its shells) outlive
+ * the app closing. A no-op off Windows and in tests. Detached + hidden, so the
+ * keepalive survives the client exiting and shows no console; the `flock` in
+ * `wslKeepAliveCommand` keeps it to one instance no matter how often this runs.
+ */
+export function ensureWslKeepAlive(options: KeepAliveOptions = {}): void {
+  const env = options.env ?? (process.env as Record<string, string | undefined>);
+  const platform = options.platform ?? process.platform;
+  if (platform !== 'win32') return;
+  if (isTestEnvironment(env) && !options.allowSpawnInTests) return;
+  const command = wslKeepAliveCommand(env);
+  try {
+    (options.spawn ?? defaultSpawn)(command.bin, command.args);
+    log(`keepalive: ${command.bin} ${command.args.join(' ')}`);
+  } catch (err) {
+    log('keepalive spawn failed', err);
+  }
+}
+
 /** One WSL boot at a time per target: repeated reconnects share the wait. */
 const inflightWsl = new Map<string, Promise<EnsureServerResult>>();
 
