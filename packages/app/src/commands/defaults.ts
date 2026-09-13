@@ -75,6 +75,16 @@ export interface CommandDefinition {
 }
 
 export const COMMAND_DEFINITIONS: CommandDefinition[] = [
+  // First in the table so the palette leads with it: the sort is stable and
+  // an empty query scores every title alike.
+  {
+    id: 'app.about',
+    title: 'About Superterminal',
+    bindings: [],
+    run(ctx) {
+      ctx.store.dispatch({ type: 'about.open' });
+    },
+  },
   {
     id: 'tab.new',
     title: 'New Tab',

@@ -105,6 +105,7 @@ function harness(over: { native?: Partial<NativeBridge>; split?: boolean } = {})
       reconnect: () => {
         reconnects.push(1);
       },
+      openExternal: () => true,
     },
     platform: 'linux',
   };
@@ -122,6 +123,7 @@ describe('registry composition', () => {
   test('every v1 command from Q29 is present', () => {
     const registry = buildRegistry({ platform: 'linux' });
     expect(registry.commands.map((c) => c.id)).toEqual([
+      'app.about',
       'tab.new',
       'tab.close',
       'pane.splitRight',
@@ -162,6 +164,7 @@ describe('registry composition', () => {
     expect(registry.byId('edit.paste')!.title).toBe('Paste');
     expect(registry.byId('surface.clearScrollback')!.title).toBe('Clear Scrollback');
     expect(registry.byId('app.reconnect')!.title).toBe('Reconnect');
+    expect(registry.byId('app.about')!.title).toBe('About Superterminal');
     expect(registry.byId('app.quit')!.title).toBe('Quit');
   });
 
@@ -653,6 +656,16 @@ describe('command behaviour', () => {
     await registry.run('app.quit', ctx);
     expect(reconnects).toHaveLength(1);
     expect(quits).toHaveLength(1);
+  });
+
+  test('about opens its dialog and closes the palette', async () => {
+    const registry = buildRegistry({ platform: 'linux' });
+    const { ctx, store } = harness();
+    store.dispatch({ type: 'palette.open', mode: 'commands' });
+    await registry.run('app.about', ctx);
+    expect(store.getState().ui.aboutOpen).toBe(true);
+    expect(store.getState().ui.paletteOpen).toBe(false);
+    expect(registry.byId('app.about')!.shortcut).toEqual([]);
   });
 
   test('running an unknown id warns instead of throwing', () => {

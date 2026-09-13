@@ -483,6 +483,22 @@ describe('applyUiAction', () => {
     expect(applyUiAction(s, { type: 'palette.close' })).toBe(s);
   });
 
+  test('about dialog opens, closes, and displaces the palette', () => {
+    let s = applyUiAction(seeded(), { type: 'palette.open', mode: 'commands' });
+    s = applyUiAction(s, { type: 'palette.setQuery', query: 'abo' });
+    s = applyUiAction(s, { type: 'about.open' });
+    expect(s.ui).toMatchObject({ aboutOpen: true, paletteOpen: false, paletteQuery: '' });
+    expect(applyUiAction(s, { type: 'about.open' })).toBe(s);
+
+    s = applyUiAction(s, { type: 'palette.open' });
+    expect(s.ui).toMatchObject({ aboutOpen: false, paletteOpen: true });
+
+    s = applyUiAction(s, { type: 'about.open' });
+    s = applyUiAction(s, { type: 'about.close' });
+    expect(s.ui.aboutOpen).toBe(false);
+    expect(applyUiAction(s, { type: 'about.close' })).toBe(s);
+  });
+
   test('palette.move wraps in both directions and tolerates an empty list', () => {
     let s = applyUiAction(seeded(), { type: 'palette.open' });
     s = applyUiAction(s, { type: 'palette.move', delta: 1, count: 3 });

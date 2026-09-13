@@ -13,6 +13,7 @@
  *    │       ├─ <ContentHeader/>
  *    │       └─ <SurfaceHost/>
  *    ├─ <CommandPalette/>
+ *    ├─ <About/>
  *    └─ <StatusToasts/>
  *
  * Exactly one `<terminal-grid>` is mounted: the visible tab's (Q44).
@@ -27,6 +28,7 @@ import type { KeyEventLike } from '../platform/keys.js';
 import { selectActiveSurface } from '../state/selectors.js';
 import { displayTitle } from '../state/title.js';
 import { debug } from '../util/debug.js';
+import { About } from './About.js';
 import { Banner, StatusToasts } from './Banner.js';
 import { CommandPalette } from './CommandPalette.js';
 import { Divider } from './Divider.js';
@@ -59,13 +61,17 @@ function AppFrame() {
   const vertical = useWorkspace((s) => s.ui.verticalTabs);
   const paletteOpen = useWorkspace((s) => s.ui.paletteOpen);
   const menuOpen = useWorkspace((s) => s.ui.menu !== null);
+  const aboutOpen = useWorkspace((s) => s.ui.aboutOpen);
   const sidebarWidth = useWorkspace((s) => s.ui.sidebarWidth);
 
   const onKeyDown = (event: KeyEventLike) => {
     // While the palette or the Menu is open it owns Esc/↑/↓/Enter; its
     // `<input>` handles them, so only bail out for those keys (⌘K still
     // toggles session mode).
-    if ((paletteOpen || menuOpen) && ['escape', 'up', 'down', 'enter'].includes(event.key ?? '')) {
+    if (
+      (paletteOpen || menuOpen || aboutOpen) &&
+      ['escape', 'up', 'down', 'enter'].includes(event.key ?? '')
+    ) {
       return;
     }
 
@@ -177,6 +183,7 @@ function AppFrame() {
         </div>
       )}
       <CommandPalette />
+      <About />
       <Menu />
       <StatusToasts />
       <WindowSizeTracker />

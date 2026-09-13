@@ -32,6 +32,8 @@ export interface NativeBridge {
 export interface AppBridge {
   reconnect(): void | Promise<void>;
   quit(): void;
+  /** Hand an http(s) URL to the default browser; false when nothing could be launched. */
+  openExternal(url: string): boolean;
 }
 
 export interface CommandContext {
@@ -78,4 +80,5 @@ export const noopNativeBridge: NativeBridge = {
 export const noopAppBridge: AppBridge = {
   reconnect: () => {},
   quit: () => {},
+  openExternal: () => false,
 };

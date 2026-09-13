@@ -14,6 +14,7 @@ import type { Config } from './config/schema.js';
 import { EMPTY_CLIENT_STATE, loadClientState, type ClientState } from './state/client-state.js';
 import { ControlClient } from './control/client.js';
 import { detectPlatform, type PlatformInfo } from './platform/detect.js';
+import { openExternal } from './platform/open-external.js';
 import { createCommandBus, createNativeBridge, type NativeCommandBus } from './native/bridge.js';
 import { ensureServer, ensureWslKeepAlive, ServerUnavailableError } from './server/ensure.js';
 import { defaultSocketPath } from './server/paths.js';
@@ -105,6 +106,7 @@ export function bootstrap(options: BootstrapOptions): Bootstrapped {
       client.close();
       options.onQuit?.();
     },
+    openExternal: (url) => openExternal(url, platform.platform, { isWsl: platform.isWsl }),
   };
 
   const commandContext: CommandContext = {

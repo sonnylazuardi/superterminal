@@ -36,11 +36,9 @@ import { App } from './ui/App.js';
 import type { AppServices } from './ui/context.js';
 import { debug } from './util/debug.js';
 import { startDriveFile } from './util/drive.js';
+import { describeBuild } from './version.js';
 
 const eventsLog = debug('st:events');
-
-const BUILD_ID = process.env['SUPERTERMINAL_BUILD_ID'] ?? 'dev';
-const VERSION = process.env['SUPERTERMINAL_VERSION'] ?? '0.1.0';
 
 interface RootSlot {
   root: Root;
@@ -61,7 +59,7 @@ export function main(argvInput: string[] = Bun.argv.slice(2)): void {
     return;
   }
   if (argv.version) {
-    process.stdout.write(`superterminal ${VERSION} (${BUILD_ID}, proto 1.0)\n`);
+    process.stdout.write(`${describeBuild()} (proto 1.0)\n`);
     return;
   }
 

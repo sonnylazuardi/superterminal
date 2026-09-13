@@ -36,6 +36,7 @@ export const initialUiState: UiState = {
   paletteMode: 'commands',
   paletteQuery: '',
   paletteIndex: 0,
+  aboutOpen: false,
   verticalTabs: false,
   sidebarWidth: 220,
   fontZoom: 0,
@@ -278,6 +279,7 @@ export function applyUiAction(state: WorkspaceState, action: UiAction): Workspac
     case 'palette.open':
       return withUi(state, {
         paletteOpen: true,
+        aboutOpen: false,
         paletteMode: action.mode ?? ui.paletteMode,
         paletteQuery: '',
         paletteIndex: 0,
@@ -306,6 +308,15 @@ export function applyUiAction(state: WorkspaceState, action: UiAction): Workspac
       if (action.index === ui.paletteIndex) return state;
       return withUi(state, { paletteIndex: Math.max(0, action.index) });
     }
+
+    // One Dialog at a time (05 §4): About and the palette displace each other.
+    case 'about.open':
+      if (ui.aboutOpen) return state;
+      return withUi(state, { aboutOpen: true, paletteOpen: false, paletteQuery: '', paletteIndex: 0 });
+
+    case 'about.close':
+      if (!ui.aboutOpen) return state;
+      return withUi(state, { aboutOpen: false });
 
     case 'ui.toggleVerticalTabs':
       return withUi(state, { verticalTabs: !ui.verticalTabs });

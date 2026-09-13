@@ -37,7 +37,9 @@ APP="$DIST/$APP_NAME.app"
 MACOS_DIR="$APP/Contents/MacOS"
 RES_DIR="$APP/Contents/Resources"
 
-VERSION="$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')"
+# The release number lives in packages/app/src/version.ts (the About dialog and
+# `--version` print it), not in Cargo.toml, which has stayed at 0.1.0.
+VERSION="$(grep -m1 "^export const APP_VERSION" packages/app/src/version.ts | sed "s/.*'\(.*\)'.*/\1/")"
 GIT_SHA="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
 BUILD_ID="$VERSION+$GIT_SHA"
 

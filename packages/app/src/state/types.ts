@@ -98,6 +98,8 @@ export interface UiState {
   paletteMode: PaletteMode;
   paletteQuery: string;
   paletteIndex: number;
+  /** The About dialog (version + project link), opened by `app.about`. */
+  aboutOpen: boolean;
   verticalTabs: boolean;
   /** Sidebar column width in logical px (Client State). */
   sidebarWidth: number;
@@ -145,6 +147,8 @@ export type UiAction =
   | { type: 'palette.setQuery'; query: string }
   | { type: 'palette.move'; delta: number; count: number }
   | { type: 'palette.setIndex'; index: number }
+  | { type: 'about.open' }
+  | { type: 'about.close' }
   | { type: 'ui.toggleVerticalTabs' }
   | { type: 'ui.setVerticalTabs'; value: boolean }
   | { type: 'ui.setSidebarWidth'; width: number }
