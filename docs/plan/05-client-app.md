@@ -124,7 +124,8 @@ Selectors (`selectActiveTabs`, `selectActiveSurface`, `selectMountedSurfaceIds`)
  │   │   └─ <NewTabButton/>
  │   └─ <SurfaceHost>                   flex:1; one <terminal-grid> per mounted tab
  │       └─ <terminal-grid surfaceId=…/> × ≤4   (04-client-native.md props/events)
- ├─ <CommandPalette/>                   <anchored> overlay + <input> + list (commands | sessions)
+ ├─ <CommandPalette/>                   <anchored> overlay + <input> + list (commands + tabs + sessions | sessions) — 08
+ ├─ <AiSettings/>                       Dialog: Jev key entry + status (08 Q17)
  ├─ <Banner/>                           disconnected / version mismatch / server restarting
  └─ <StatusToasts/>                     bell, copy confirmation; auto-dismiss 2.5 s
 ```
@@ -133,7 +134,7 @@ Selectors (`selectActiveTabs`, `selectActiveSurface`, `selectMountedSurfaceIds`)
 
 Focus: when the active tab changes, `<SurfaceHost>` calls `focus()` on the active grid's ref after commit. Tab-key focus traversal stays in Rust (gpuix limit), which is fine: Tab must reach the shell.
 
-**`<CommandPalette>`** is a single `<anchored>` positioned at top-center, 560 px wide, containing `<input autoFocus onChange onKeyDown>` and a plain `<div>` list (not `virtual-list`: at most a few dozen rows; and nested scrolling is unsupported, so the list is capped at 8 visible rows and scrolls by shifting the window of items, not by an inner scroll container). Modes: `commands` (⌘/Ctrl+Shift+P) and `sessions` (⌘/Ctrl+K). Fuzzy match is a ~30-line subsequence scorer; no dependency.
+**`<CommandPalette>`** is a single `<anchored>` positioned at top-center, 560 px wide, containing `<input autoFocus onChange onKeyDown>` and a plain `<div>` list (not `virtual-list`: at most a few dozen rows; and nested scrolling is unsupported, so the list is capped at 8 visible rows and scrolls by shifting the window of items, not by an inner scroll container). Modes (amended by 08 Q1/Q5): `all` — commands, tabs of the active Session and sessions in one list (⌘K on macOS, **plain Ctrl+K** on Linux/Windows, ⌘⇧P / Ctrl+Shift+P as an alias) — and `sessions` (Switch Session…, ⌘⇧S / Ctrl+Shift+S). Fuzzy match is a ~30-line subsequence scorer; no dependency. With a Jev key configured (`[ai]`, 08 §D) the settled query is also ranked semantically (`ai/palette-rank.ts`): a confident pick is promoted to row 0, an empty local list is filled; Enter never waits.
 
 **`<Banner>`** shows one message at a time with an action button: `disconnected` → **Reconnect**; `mismatch` → **Restart server** (the text states running processes will be killed, Q31); `reconnecting` → spinner only, no action.
 
@@ -162,21 +163,22 @@ The modifier story (Q4: no prefix key, ordinary app shortcuts): `mod` is ⌘ on 
 | `tab.prev` | Previous Tab | ⌘⇧[ , Ctrl+Shift+Tab | Ctrl+Shift+[ , Ctrl+Shift+Tab | >1 tab |
 | `tab.goto(1–9)` | Go to Tab N | ⌘1…⌘9 | Alt+1…Alt+9 | — |
 | `session.new` | New Session | ⌘N | Ctrl+Shift+N | connected |
-| `session.switch` | Switch Session… | ⌘K | Ctrl+Shift+K | connected |
+| `session.switch` | Switch Session… | ⌘⇧S (was ⌘K until 08) | Ctrl+Shift+S | connected |
 | `session.rename` | Rename Session | ⌘R | Ctrl+Shift+R | active session |
 | `view.toggleVerticalTabs` | Toggle Vertical Tabs | ⌘⇧B | Ctrl+Shift+B | — |
 | `edit.copy` | Copy | ⌘C | Ctrl+Shift+C | selection present |
 | `edit.paste` | Paste | ⌘V | Ctrl+Shift+V | active surface |
 | `surface.clearScrollback` | Clear Scrollback | ⌘⇧K | Ctrl+Shift+L | active surface |
 | `app.reconnect` | Reconnect | — | — | — |
-| `palette.commands` | Command Palette | ⌘⇧P | Ctrl+Shift+P | — |
+| `palette.commands` | Command Palette | ⌘K, ⌘⇧P | **Ctrl+K**, Ctrl+Shift+P (08 Q5; Ctrl+K knowingly taken from readline, rebindable) | — |
+| `ai.settings` | AI Settings… | — | — | — |
 | `app.quit` | Quit | ⌘Q | Ctrl+Shift+Q | — |
 
 `Ctrl+Tab` on macOS and `Alt+digit` on Linux are the only non-`mod` entries and are listed explicitly. `tab.goto` is one command with a numeric argument to keep the palette clean.
 
 **Feeding `passthroughShortcuts`.** The native `<terminal-grid>` owns keyboard input (Q23) and would otherwise encode ⌘T as bytes or eat it. `<SurfaceHost>` passes `passthroughShortcuts={registry.passthroughList()}` — the flattened, platform-resolved bindings serialised as gpuix keystroke strings (`"cmd-t"`, `"ctrl-shift-t"`, `"ctrl-tab"`). The element declines exactly these; GPUI bubbles them to the app root, where `<App onKeyDown={dispatchKey}>` normalises the event to a `Keybinding` and runs the first enabled matching command. `Ctrl+Shift+C/V` on Linux are also *conventional* terminal copy/paste, so the terminal loses nothing. The same list is what the palette displays as hints, so there is one source of truth: the registry.
 
-Edge: while the palette is open, `dispatchKey` first routes Esc/↑/↓/Enter to the palette; commands still fire (⌘K toggles session mode from within the palette).
+Edge: while the palette is open, `dispatchKey` first routes Esc/↑/↓/Enter to the palette; commands still fire (⌘K / Ctrl+K closes the palette again, 08 Q7).
 
 ---
 

@@ -229,5 +229,17 @@ The vendored Zed checkout that gpuix pins renders via `wgpu`. On the WSL2 dev bo
 ### Q53. A second gpuix patch is required for Linux input testing (M0 finding)
 `UiCommand::DispatchMouse` dispatches inside `WindowHandle::<GpuixView>::update`, which leases the view while gpuix's own root MouseUp handler updates it — so every synthetic left click panics the GPUI thread and all subsequent napi calls fail. Upstream misses it because `TestGpuixRenderer` is macOS/Windows-only. **Adopted:** carry `patches/0002-linux-simulate-mouse-double-lease.patch` (7 lines, mirroring the `DispatchKey` arm's use of `AnyWindowHandle`) alongside the factory hook, and open upstream PRs for both. Without it no automated input test can run on Linux, which M3's testing story depends on.
 
+### Q54. AI features (supersedes the "AI features" item of Q5)
+v1 shipped. AI features are allowed as **opt‑in, network‑calling, chrome‑only** additions: they never touch the cell path (I2), the Server stays network‑free, and every such feature degrades to its non‑AI behaviour when unconfigured or offline. First instance: the Jev‑ranked palette, [`08-jev-palette.md`](./08-jev-palette.md). **Adopted.**
+
+### Q55. ⌘K / Ctrl+K opens the unified palette (amends Q29's table)
+`palette.commands` is bound to ⌘K on macOS and **plain Ctrl+K** on Windows and Linux (the user's explicit choice; Q29's rule against plain Ctrl is knowingly broken for this one chord), with ⌘⇧P / Ctrl+Shift+P kept as a second binding. Readline's kill‑line is recoverable with `"palette.commands" = "ctrl+shift+p"` in `[keybindings]`. **Adopted.**
+
+### Q56. One palette, three nouns (amends Q29)
+Commands, Tabs and Sessions are rows of one list; `sessions` survives as a filter opened by `session.switch`, rebound from `mod+k` to `mod+shift+s`. Local fuzzy matching stays authoritative and instant; Jev may promote or fill rows asynchronously under the rules in 08 §C. **Adopted.**
+
+### Q57. Where an AI provider key lives (extends Q34; adds a third store beside Config and Client State)
+Precedence: `[ai] api_key` in `config.toml`; else the key the user entered in the app's **AI Settings…** dialog, stored in `secrets.json` in the Client State directory (`%LOCALAPPDATA%\superterminal` on Windows, `~/Library/Application Support/superterminal` on macOS, `~/.local/state/superterminal` on Linux; 0600 on Unix); else `$SUPERTERMINAL_AI_API_KEY`; else OpenCode's own auth store (`~/.local/share/opencode/auth.json`, `opencode.key`). A typed‑in secret is neither Config (hand‑written, never written by the program) nor Client State (remembered without being declared), hence its own file. The `[ai]` table is parsed by both `st-config` (for `st config init/check`) and the client, and read only by the client. The key is never printed beyond its last four characters. **Adopted.**
+
 ## Shared understanding reached
 The decisions above (Q1–Q53) are frozen for planning. Downstream documents: `01-architecture.md`, `02-protocol.md`, `03-server.md`, `04-client-native.md`, `05-client-app.md`, `06-testing-perf.md`, `07-milestones.md`, `CONTEXT.md`, `docs/adr/*`, `HANDOVER.md`.

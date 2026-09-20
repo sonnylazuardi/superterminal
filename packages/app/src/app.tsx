@@ -84,6 +84,7 @@ export function main(argvInput: string[] = Bun.argv.slice(2)): void {
     platform: boot.platform,
     config: boot.config,
     commandBus: boot.commandBus,
+    ai: boot.ai,
     socketPath: boot.socketPath,
   };
 

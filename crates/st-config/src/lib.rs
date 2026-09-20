@@ -45,8 +45,8 @@ pub use crate::paths::{
     CONFIG_FILE_NAME, DIR_MODE, LOCK_FILE_NAME, SOCKET_FILE_NAME,
 };
 pub use crate::sections::{
-    BackspaceSends, FontConfig, Keybindings, OptionAsAlt, Padding, ResolvedShell, ServerConfig,
-    ShellConfig, TerminalConfig, ThemeConfig, WindowBackground, WindowConfig,
+    AiConfig, BackspaceSends, FontConfig, Keybindings, OptionAsAlt, Padding, ResolvedShell,
+    ServerConfig, ShellConfig, TerminalConfig, ThemeConfig, WindowBackground, WindowConfig,
 };
 
 /// The whole of `config.toml`.
@@ -77,6 +77,8 @@ pub struct Config {
     pub keybindings: Keybindings,
     /// `[server]`
     pub server: ServerConfig,
+    /// `[ai]` (client-only)
+    pub ai: AiConfig,
 }
 
 /// The result of a load: the configuration plus everything non-fatal we found.

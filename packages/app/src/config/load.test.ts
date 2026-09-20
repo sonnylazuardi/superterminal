@@ -29,6 +29,12 @@ describe('defaults', () => {
     expect(DEFAULT_CONFIG.terminal.boldIsBright).toBe(false);
     expect(DEFAULT_CONFIG.theme).toEqual({});
     expect(DEFAULT_CONFIG.keybindings).toEqual({});
+    expect(DEFAULT_CONFIG.ai).toEqual({
+      palette: true,
+      endpoint: 'https://opencode.ai/zen/v1/systemone',
+      model: 'jev-1.13',
+      screenContext: false,
+    });
   });
 
   test('an empty file yields defaults', () => {
@@ -82,6 +88,25 @@ ansi0 = "#000000"
     });
     expect(config.theme).toEqual({ bg: '#101014', ansi0: '#000000' });
     expect(config.keybindings).toEqual({ 'tab.new': 'mod+shift+t', 'app.quit': '' });
+  });
+
+  test('[ai] parses with both key spellings and keeps its defaults', () => {
+    const { config, warnings } = parseConfigText(
+      '[ai]\napi_key = "sk-1234567890"\npalette = false\nscreen_context = true\n',
+    );
+    expect(warnings).toEqual([]);
+    expect(config.ai).toEqual({
+      apiKey: 'sk-1234567890',
+      palette: false,
+      endpoint: 'https://opencode.ai/zen/v1/systemone',
+      model: 'jev-1.13',
+      screenContext: true,
+    });
+    expect(parseConfigText('[ai]\napiKey = "sk-1234567890"\n').config.ai.apiKey).toBe('sk-1234567890');
+    // Screen text is opt-in: absent means off, and both spellings turn it on.
+    expect(parseConfigText('[ai]\npalette = true\n').config.ai.screenContext).toBe(false);
+    expect(parseConfigText('[ai]\nscreenContext = true\n').config.ai.screenContext).toBe(true);
+    expect(parseConfigText('[ai]\nendpoint = "not a url"\n').warnings.some((w) => w.includes('ai.endpoint'))).toBe(true);
   });
 
   test('camelCase spellings are accepted as well as snake_case', () => {

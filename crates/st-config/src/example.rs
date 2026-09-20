@@ -258,7 +258,11 @@ const SECTIONS: &[Section] = &[
             "list are changed; everything else keeps its built-in binding.",
             "`mod` is Cmd on macOS and Ctrl+Shift on Linux.",
             "",
-            "Command ids: app.quit, app.reconnect, edit.copy, edit.paste,",
+            "`palette.commands` is Cmd+K on macOS and plain Ctrl+K on Linux and",
+            "Windows, which takes Ctrl+K (kill-line) away from the shell; set",
+            "`\"palette.commands\" = \"ctrl+shift+p\"` to give it back.",
+            "",
+            "Command ids: ai.settings, app.quit, app.reconnect, edit.copy, edit.paste,",
             "palette.commands, session.new, session.rename, session.switch,",
             "surface.clearScrollback, tab.close, tab.goto.1 .. tab.goto.9,",
             "tab.new, tab.next, tab.prev, view.toggleVerticalTabs,",
@@ -271,6 +275,49 @@ const SECTIONS: &[Section] = &[
             "# \"palette.commands\" = \"mod+shift+p\"",
         ],
     },
+    section(
+        "ai",
+        &[
+            "Optional AI ranking for the command palette (docs/plan/08-jev-palette.md).",
+            "Read by the client only. When a key is found, typing in the palette",
+            "sends the query, the command titles, the tab titles, their working",
+            "directories and the session names to the provider, which ranks them.",
+            "The contents of your screens are sent only if you turn on",
+            "`screen_context` below, which is off. Off entirely without a key.",
+        ],
+        &[
+            opt_key(
+                "api_key",
+                &[
+                    "Provider key. Unset means, in order: the key stored from the app's",
+                    "AI Settings... dialog, $SUPERTERMINAL_AI_API_KEY, then OpenCode's own",
+                    "login (~/.local/share/opencode/auth.json).",
+                ],
+                "api_key = \"\"",
+            ),
+            key(
+                "palette",
+                &["Rank palette rows with Jev when a key is found."],
+            ),
+            key(
+                "endpoint",
+                &["Provider endpoint (TypeSafe System One shape). Default: OpenCode Zen."],
+            ),
+            key("model", &["Model id at that endpoint."]),
+            key(
+                "screen_context",
+                &[
+                    "Also send the VISIBLE SCREEN TEXT of your tabs when you type in the",
+                    "palette, so a tab can be found by what it is showing (\"the one with",
+                    "the failing test\") and not just by its title. Only the last few lines",
+                    "of each tab are sent, and obvious secrets - keys, tokens, passwords,",
+                    "private keys - are masked first, but masking is a safety net rather",
+                    "than a guarantee. Off by default; turn it on only if you are happy",
+                    "for what is on your screen to reach the provider above.",
+                ],
+            ),
+        ],
+    ),
     section(
         "server",
         &["The background server (`superterminald`)."],

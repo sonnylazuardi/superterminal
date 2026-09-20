@@ -159,6 +159,20 @@ pub trait SurfaceSpawner: Send + Sync + 'static {
         let _ = id;
     }
 
+    /// The visible screen of one Surface, as plain text.
+    ///
+    /// Answers `surface.screen_text`: the Workspace actor owns no engine, so
+    /// the spawner is the only component that can read the Server's own
+    /// authoritative grid. `None` means "no such Surface here", which the
+    /// actor turns into an omitted entry rather than an error, so one stale id
+    /// never fails a batch. Lines are already trimmed, blank-filtered and cut
+    /// to the last `max_rows` of them. The default implementation knows no
+    /// Surfaces, which is correct for spawners with no engines.
+    fn screen_text(&self, id: SurfaceId, max_rows: usize) -> Option<Vec<String>> {
+        let _ = (id, max_rows);
+        None
+    }
+
     /// The scrollback footprint of every Surface the spawner still holds.
     ///
     /// `server.status` splices this into its result so `st status` can show
@@ -179,6 +193,9 @@ pub trait SurfaceSpawner: Send + Sync + 'static {
 pub struct NullSpawner {
     next: AtomicU32,
     fail_next: std::sync::atomic::AtomicBool,
+    /// Canned answers for [`SurfaceSpawner::screen_text`], since a
+    /// process-less Surface has no grid to read.
+    screens: std::sync::Mutex<BTreeMap<SurfaceId, Vec<String>>>,
 }
 
 impl NullSpawner {
@@ -188,7 +205,22 @@ impl NullSpawner {
         Self {
             next: AtomicU32::new(1),
             fail_next: std::sync::atomic::AtomicBool::new(false),
+            screens: std::sync::Mutex::new(BTreeMap::new()),
         }
+    }
+
+    /// Gives `id` a screen for `surface.screen_text` to return, so the control
+    /// plane can be tested without a PTY.
+    pub fn set_screen_text<I, S>(&self, id: SurfaceId, lines: I)
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        let lines = lines.into_iter().map(Into::into).collect();
+        self.screens
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(id, lines);
     }
 
     /// Makes the next [`SurfaceSpawner::spawn`] fail, so tests can exercise
@@ -215,6 +247,15 @@ impl SurfaceSpawner for NullSpawner {
 
     fn kill(&self, _id: SurfaceId, _signal: KillSignal) -> Result<(), SpawnError> {
         Ok(())
+    }
+
+    fn screen_text(&self, id: SurfaceId, max_rows: usize) -> Option<Vec<String>> {
+        let screens = self.screens.lock().unwrap_or_else(|e| e.into_inner());
+        let mut lines = screens.get(&id).cloned()?;
+        if lines.len() > max_rows {
+            lines.drain(..lines.len() - max_rows);
+        }
+        Some(lines)
     }
 }
 
@@ -249,6 +290,25 @@ mod tests {
         let err = spawner.spawn(&spec()).unwrap_err();
         assert_eq!(err.to_error_body().code, ErrorCode::SpawnFailed);
         assert!(spawner.spawn(&spec()).is_ok(), "only the next spawn fails");
+    }
+
+    #[test]
+    fn a_spawner_with_no_engines_knows_no_screen_text() {
+        let spawner = NullSpawner::new();
+        let id = spawner.spawn(&spec()).unwrap().id;
+        assert_eq!(spawner.screen_text(id, 40), None, "nothing canned yet");
+
+        spawner.set_screen_text(id, ["one", "two", "three"]);
+        assert_eq!(
+            spawner.screen_text(id, 40),
+            Some(vec!["one".into(), "two".into(), "three".into()])
+        );
+        assert_eq!(
+            spawner.screen_text(id, 2),
+            Some(vec!["two".into(), "three".into()]),
+            "max_rows keeps the tail"
+        );
+        assert_eq!(spawner.screen_text(SurfaceId(999), 40), None);
     }
 
     #[test]

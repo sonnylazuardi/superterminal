@@ -160,6 +160,7 @@ fn the_strategy_covers_every_request() {
         "surface.create",
         "surface.kill",
         "surface.rename",
+        "surface.screen_text",
         "view.set",
         "server.status",
         "server.shutdown",

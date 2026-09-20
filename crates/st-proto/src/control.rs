@@ -856,6 +856,25 @@ pub enum Req {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         signal: Option<KillSignal>,
     },
+    /// Read the *visible* screen of one or more Surfaces as plain text, so a
+    /// client can search what is on screen (command palette).
+    ///
+    /// The scrollback is not included; blank rows are dropped and only the
+    /// last `max_rows` non-blank lines are returned, because the bottom of the
+    /// screen is the recent content. Unknown Surface ids are silently omitted
+    /// from the answer, so one stale id never fails a batch.
+    /// Result: [`ScreenTextResult`].
+    #[serde(rename = "surface.screen_text")]
+    SurfaceScreenText {
+        /// Request id.
+        id: ReqId,
+        /// Surfaces to read, in any order.
+        surfaces: Vec<SurfaceId>,
+        /// Cap on the lines returned per Surface; [`DEFAULT_SCREEN_TEXT_ROWS`]
+        /// when absent, clamped to [`MAX_SCREEN_TEXT_ROWS`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_rows: Option<u16>,
+    },
     /// Set or clear a Surface's user title. Result: [`RevisionResult`].
     #[serde(rename = "surface.rename")]
     SurfaceRename {
@@ -927,6 +946,7 @@ impl Req {
             | Req::TabSetRatio { id, .. }
             | Req::SurfaceCreate { id, .. }
             | Req::SurfaceKill { id, .. }
+            | Req::SurfaceScreenText { id, .. }
             | Req::SurfaceRename { id, .. }
             | Req::ViewSet { id, .. }
             | Req::ServerStatus { id }
@@ -973,6 +993,7 @@ impl Req {
             Req::TabSetRatio { .. } => "tab.set_ratio",
             Req::SurfaceCreate { .. } => "surface.create",
             Req::SurfaceKill { .. } => "surface.kill",
+            Req::SurfaceScreenText { .. } => "surface.screen_text",
             Req::SurfaceRename { .. } => "surface.rename",
             Req::ViewSet { .. } => "view.set",
             Req::ServerStatus { .. } => "server.status",
@@ -1034,6 +1055,32 @@ pub struct SurfaceCreated {
     /// The new, still detached Surface.
     pub surface: SurfaceId,
 }
+
+/// One Surface's visible screen, as [`ScreenTextResult`] carries it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScreenText {
+    /// The Surface the lines came from.
+    pub surface: SurfaceId,
+    /// Visible rows, top to bottom, trailing whitespace trimmed and blank
+    /// rows dropped; at most `max_rows` of them, keeping the *last* ones.
+    pub lines: Vec<String>,
+}
+
+/// Result of `surface.screen_text`.
+///
+/// Surfaces that do not exist are omitted rather than reported as an error,
+/// so a batch built from a possibly-stale client view never fails as a whole.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct ScreenTextResult {
+    /// One entry per Surface that exists, in request order.
+    pub screens: Vec<ScreenText>,
+}
+
+/// Lines per Surface `surface.screen_text` returns when `max_rows` is absent.
+pub const DEFAULT_SCREEN_TEXT_ROWS: u16 = 40;
+
+/// Ceiling `surface.screen_text` clamps `max_rows` to.
+pub const MAX_SCREEN_TEXT_ROWS: u16 = 200;
 
 /// Result of a request that returns `{}` (§3.3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -1312,6 +1359,11 @@ mod tests {
                 path: vec![1, 0],
                 ratio: SplitRatio::from_f32(0.333),
                 if_revision: None,
+            },
+            Req::SurfaceScreenText {
+                id: 22,
+                surfaces: vec![SurfaceId(9), SurfaceId(10)],
+                max_rows: Some(20),
             },
         ]
     }
@@ -1592,6 +1644,64 @@ mod tests {
         };
         assert_eq!(a, None);
         assert_eq!(b, Some(None));
+    }
+
+    #[test]
+    fn surface_screen_text_matches_the_contract() {
+        let req: Req =
+            serde_json::from_str(r#"{"t":"surface.screen_text","id":3,"surfaces":[9,10]}"#)
+                .unwrap();
+        assert_eq!(req.tag(), "surface.screen_text");
+        assert_eq!(req.id(), 3);
+        assert_eq!(req.if_revision(), None, "reads never guard on a revision");
+        let Req::SurfaceScreenText {
+            surfaces, max_rows, ..
+        } = &req
+        else {
+            panic!("expected surface.screen_text");
+        };
+        assert_eq!(surfaces, &vec![SurfaceId(9), SurfaceId(10)]);
+        assert_eq!(*max_rows, None, "absent means the server default");
+        assert_eq!(
+            serde_json::to_string(&req).unwrap(),
+            r#"{"t":"surface.screen_text","id":3,"surfaces":[9,10]}"#,
+            "an absent max_rows is not written back"
+        );
+
+        let capped: Req = serde_json::from_str(
+            r#"{"t":"surface.screen_text","id":4,"surfaces":[9],"max_rows":5}"#,
+        )
+        .unwrap();
+        let Req::SurfaceScreenText { max_rows, .. } = capped else {
+            unreachable!()
+        };
+        assert_eq!(max_rows, Some(5));
+        assert_eq!(DEFAULT_SCREEN_TEXT_ROWS, 40);
+        assert_eq!(MAX_SCREEN_TEXT_ROWS, 200);
+    }
+
+    #[test]
+    fn screen_text_result_round_trips_and_omits_unknown_surfaces() {
+        let result = ScreenTextResult {
+            screens: vec![ScreenText {
+                surface: SurfaceId(9),
+                lines: vec!["$ cargo test".into(), "   Compiling st-proto".into()],
+            }],
+        };
+        let value = serde_json::to_value(&result).unwrap();
+        assert_eq!(
+            value,
+            json!({"screens":[{"surface":9,"lines":["$ cargo test","   Compiling st-proto"]}]})
+        );
+        assert_eq!(
+            serde_json::from_value::<ScreenTextResult>(value).unwrap(),
+            result
+        );
+        // A batch where nothing matched is an empty list, never an error.
+        assert_eq!(
+            serde_json::from_str::<ScreenTextResult>(r#"{"screens":[]}"#).unwrap(),
+            ScreenTextResult::default()
+        );
     }
 
     #[test]

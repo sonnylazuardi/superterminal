@@ -67,6 +67,8 @@ function spawnSpecFromState(state: WorkspaceState, surfaceId?: number | null) {
 export interface CommandDefinition {
   id: string;
   title: string;
+  /** Plain-words purpose, for the AI ranker (08 Q3). */
+  description: string;
   bindings: BindingSpec[];
   args?: Array<CommandArg | undefined>;
   when?: (state: WorkspaceState) => boolean;
@@ -79,6 +81,7 @@ export const COMMAND_DEFINITIONS: CommandDefinition[] = [
   // an empty query scores every title alike.
   {
     id: 'app.about',
+    description: 'Show the build version and the project link',
     title: 'About Superterminal',
     bindings: [],
     run(ctx) {
@@ -87,6 +90,7 @@ export const COMMAND_DEFINITIONS: CommandDefinition[] = [
   },
   {
     id: 'tab.new',
+    description: 'Open a new tab with a fresh shell in the current directory',
     title: 'New Tab',
     bindings: ['mod+t'],
     when: connected,
@@ -99,6 +103,7 @@ export const COMMAND_DEFINITIONS: CommandDefinition[] = [
   },
   {
     id: 'tab.close',
+    description: 'Close the active tab and every pane in it, ending its programs',
     title: 'Close Tab',
     bindings: ['mod+w'],
     when: hasActiveTab,
@@ -108,6 +113,7 @@ export const COMMAND_DEFINITIONS: CommandDefinition[] = [
   },
   {
     id: 'pane.splitRight',
+    description: 'Split the focused pane so the new pane is beside it, to the right',
     title: 'Split Right',
     // `mod+shift+x` collapses onto `mod+x` on Linux/Windows (mod = Ctrl+Shift),
     // so the pane bindings are spelled per platform.
@@ -119,6 +125,7 @@ export const COMMAND_DEFINITIONS: CommandDefinition[] = [
   },
   {
     id: 'pane.splitDown',
+    description: 'Split the focused pane so the new pane is below it',
     title: 'Split Down',
     bindings: [{ darwin: 'mod+shift+d', other: 'alt+shift+d' }],
     when: hasActiveTab,
@@ -128,6 +135,7 @@ export const COMMAND_DEFINITIONS: CommandDefinition[] = [
   },
   {
     id: 'pane.close',
+    description: 'Close the focused pane; its sibling takes the space',
     title: 'Close Pane',
     bindings: [{ darwin: 'mod+shift+w', other: 'alt+shift+w' }],
     when: hasActiveTab,
@@ -142,6 +150,7 @@ export const COMMAND_DEFINITIONS: CommandDefinition[] = [
   },
   {
     id: 'pane.focusNext',
+    description: 'Move keyboard focus to the next pane of this tab',
     title: 'Focus Next Pane',
     bindings: [{ darwin: 'mod+]', other: 'alt+]' }],
     when: manyPanes,
@@ -151,6 +160,7 @@ export const COMMAND_DEFINITIONS: CommandDefinition[] = [
   },
   {
     id: 'pane.focusPrev',
+    description: 'Move keyboard focus to the previous pane of this tab',
     title: 'Focus Previous Pane',
     bindings: [{ darwin: 'mod+[', other: 'alt+[' }],
     when: manyPanes,
@@ -160,6 +170,7 @@ export const COMMAND_DEFINITIONS: CommandDefinition[] = [
   },
   {
     id: 'tab.next',
+    description: 'Switch to the tab after the active one',
     title: 'Next Tab',
     bindings: ['mod+shift+]', 'ctrl+tab'],
     when: manyTabs,
@@ -170,6 +181,7 @@ export const COMMAND_DEFINITIONS: CommandDefinition[] = [
   },
   {
     id: 'tab.prev',
+    description: 'Switch to the tab before the active one',
     title: 'Previous Tab',
     bindings: ['mod+shift+[', 'ctrl+shift+tab'],
     when: manyTabs,
@@ -180,6 +192,7 @@ export const COMMAND_DEFINITIONS: CommandDefinition[] = [
   },
   {
     id: 'tab.goto',
+    description: 'Switch to the tab at a given position',
     title: 'Go to Tab…',
     // ⌘1…⌘9 on macOS, Alt+1…Alt+9 on Linux (plain Ctrl+digit is terminal input).
     bindings: Array.from({ length: 9 }, (_, i) => ({
@@ -197,6 +210,7 @@ export const COMMAND_DEFINITIONS: CommandDefinition[] = [
   },
   {
     id: 'session.new',
+    description: 'Create a new session, a named group of tabs, and switch to it',
     title: 'New Session',
     bindings: ['mod+n'],
     when: connected,
@@ -213,8 +227,10 @@ export const COMMAND_DEFINITIONS: CommandDefinition[] = [
   },
   {
     id: 'session.switch',
+    description: 'List the sessions to switch to another one',
     title: 'Switch Session…',
-    bindings: ['mod+k'],
+    // ⌘K went to the unified palette (08 Q5/Q6); ⌘⇧K is Clear Scrollback.
+    bindings: ['mod+shift+s'],
     when: connected,
     run(ctx) {
       ctx.store.dispatch({ type: 'palette.open', mode: 'sessions' });
@@ -222,6 +238,7 @@ export const COMMAND_DEFINITIONS: CommandDefinition[] = [
   },
   {
     id: 'session.rename',
+    description: 'Rename the active session',
     title: 'Rename Session',
     bindings: ['mod+r'],
     when: (s) => selectActiveSession(s) !== null,
@@ -233,6 +250,7 @@ export const COMMAND_DEFINITIONS: CommandDefinition[] = [
   },
   {
     id: 'view.toggleVerticalTabs',
+    description: 'Move the tab list between the left sidebar and the top strip',
     title: 'Toggle Vertical Tabs',
     bindings: ['mod+shift+b'],
     run(ctx) {
@@ -241,6 +259,7 @@ export const COMMAND_DEFINITIONS: CommandDefinition[] = [
   },
   {
     id: 'view.zoomIn',
+    description: 'Increase the terminal font size',
     title: 'Make Text Bigger',
     // ⌘= is the unshifted key under ⌘+, so both spellings are bound, like
     // iTerm. Plain Ctrl+= is nothing to a terminal, so Linux/Windows get the
@@ -255,6 +274,7 @@ export const COMMAND_DEFINITIONS: CommandDefinition[] = [
   },
   {
     id: 'view.zoomOut',
+    description: 'Decrease the terminal font size',
     title: 'Make Text Smaller',
     bindings: [
       { darwin: 'mod+-', other: 'ctrl+-' },
@@ -266,6 +286,7 @@ export const COMMAND_DEFINITIONS: CommandDefinition[] = [
   },
   {
     id: 'view.zoomReset',
+    description: 'Return the terminal font to its configured size',
     title: 'Reset Text Size',
     bindings: [{ darwin: 'mod+0', other: 'ctrl+0' }],
     when: (s) => s.ui.fontZoom !== 0,
@@ -275,6 +296,7 @@ export const COMMAND_DEFINITIONS: CommandDefinition[] = [
   },
   {
     id: 'edit.copy',
+    description: 'Copy the selected text to the clipboard',
     title: 'Copy',
     bindings: ['mod+c'],
     when: (s) => hasSurface(s),
@@ -287,6 +309,7 @@ export const COMMAND_DEFINITIONS: CommandDefinition[] = [
   },
   {
     id: 'edit.paste',
+    description: 'Paste the clipboard into the terminal',
     title: 'Paste',
     bindings: ['mod+v'],
     when: hasSurface,
@@ -297,6 +320,7 @@ export const COMMAND_DEFINITIONS: CommandDefinition[] = [
   },
   {
     id: 'surface.clearScrollback',
+    description: 'Clear the screen and discard the scrollback history',
     title: 'Clear Scrollback',
     bindings: [{ darwin: 'mod+shift+k', other: 'ctrl+shift+l' }],
     when: hasSurface,
@@ -307,14 +331,28 @@ export const COMMAND_DEFINITIONS: CommandDefinition[] = [
   },
   {
     id: 'palette.commands',
+    description: 'Open or close the command palette',
     title: 'Command Palette',
-    bindings: ['mod+shift+p'],
+    // ⌘K on macOS and plain Ctrl+K on Windows/Linux (08 Q5): the one chord
+    // that knowingly takes a readline key (kill-line). Rebind in
+    // `[keybindings]` to give it back. ⌘⇧P / Ctrl+Shift+P stays as an alias.
+    bindings: [{ darwin: 'mod+k', other: 'ctrl+k' }, 'mod+shift+p'],
     run(ctx) {
-      ctx.store.dispatch({ type: 'palette.open', mode: 'commands' });
+      ctx.store.dispatch({ type: 'palette.toggle' });
+    },
+  },
+  {
+    id: 'ai.settings',
+    description: 'Set up Jev: store the OpenCode Zen API key for AI palette ranking and test the connection',
+    title: 'AI Settings…',
+    bindings: [],
+    run(ctx) {
+      ctx.store.dispatch({ type: 'aiSettings.open' });
     },
   },
   {
     id: 'app.reconnect',
+    description: 'Reconnect to the background server',
     title: 'Reconnect',
     bindings: [],
     when: (s) => s.connection.status !== 'connected',
@@ -324,6 +362,7 @@ export const COMMAND_DEFINITIONS: CommandDefinition[] = [
   },
   {
     id: 'app.quit',
+    description: 'Quit the terminal window; programs keep running in the server',
     title: 'Quit',
     bindings: ['mod+q'],
     run(ctx) {
@@ -403,6 +442,7 @@ export function toCommand(def: CommandDefinition, platform: Platform, overrides?
   return {
     id: def.id,
     title: def.title,
+    description: def.description,
     shortcut,
     // An override replaces the whole list, so the parallel args no longer line
     // up; drop them rather than mis-binding a digit.

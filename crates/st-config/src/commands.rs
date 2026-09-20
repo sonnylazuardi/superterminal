@@ -7,6 +7,7 @@
 
 /// Every command id a `[keybindings]` entry may override.
 pub const COMMAND_IDS: &[&str] = &[
+    "ai.settings",
     "app.quit",
     "app.reconnect",
     "edit.copy",

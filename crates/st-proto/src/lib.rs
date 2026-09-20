@@ -88,10 +88,11 @@ pub mod ids;
 pub use cell::{Attrs, CellFlags, Color, PackedCell, Row, Style, StyleTable, STYLE_TABLE_CAP};
 pub use control::{
     AbsPoint, AnyRes, ControlMsg, Empty, ErrRes, ErrorBody, ErrorCode, Ev, Handshake, KillSignal,
-    Layout, OkRes, Req, ReqId, Res, Revision, RevisionResult, Selection, SelectionKind,
-    ServerStatus, Session, SessionCreated, SessionList, SpawnSpec, SplitAxis, SplitPath,
-    SplitRatio, SurfaceCreated, SurfaceMeta, SurfaceState, Tab, TabCreated, TabSplitResult,
-    ViewState, Workspace, WorkspaceSnapshot, DEFAULT_ENV_ALLOW_LIST,
+    Layout, OkRes, Req, ReqId, Res, Revision, RevisionResult, ScreenText, ScreenTextResult,
+    Selection, SelectionKind, ServerStatus, Session, SessionCreated, SessionList, SpawnSpec,
+    SplitAxis, SplitPath, SplitRatio, SurfaceCreated, SurfaceMeta, SurfaceState, Tab, TabCreated,
+    TabSplitResult, ViewState, Workspace, WorkspaceSnapshot, DEFAULT_ENV_ALLOW_LIST,
+    DEFAULT_SCREEN_TEXT_ROWS, MAX_SCREEN_TEXT_ROWS,
 };
 pub use data::{
     msg_type, Ack, Attach, AttachMode, Bell, CodecError, Cursor, CursorShape, DataError, DataMsg,

@@ -464,8 +464,8 @@ describe('applyUiAction', () => {
   });
 
   test('palette open/close/mode/query/index', () => {
-    let s = applyUiAction(seeded(), { type: 'palette.open', mode: 'commands' });
-    expect(s.ui).toMatchObject({ paletteOpen: true, paletteMode: 'commands', paletteQuery: '' });
+    let s = applyUiAction(seeded(), { type: 'palette.open', mode: 'all' });
+    expect(s.ui).toMatchObject({ paletteOpen: true, paletteMode: 'all', paletteQuery: '' });
 
     s = applyUiAction(s, { type: 'palette.setQuery', query: 'new t' });
     expect(s.ui.paletteQuery).toBe('new t');
@@ -484,7 +484,7 @@ describe('applyUiAction', () => {
   });
 
   test('about dialog opens, closes, and displaces the palette', () => {
-    let s = applyUiAction(seeded(), { type: 'palette.open', mode: 'commands' });
+    let s = applyUiAction(seeded(), { type: 'palette.open', mode: 'all' });
     s = applyUiAction(s, { type: 'palette.setQuery', query: 'abo' });
     s = applyUiAction(s, { type: 'about.open' });
     expect(s.ui).toMatchObject({ aboutOpen: true, paletteOpen: false, paletteQuery: '' });

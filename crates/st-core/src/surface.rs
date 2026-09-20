@@ -21,8 +21,8 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use st_proto::{
-    AbsLine, AttachMode, Bell, Cursor, DataMsg, Delta, DirtyRow, History, Modes, Row, Seq,
-    Snapshot, SurfaceExited, SurfaceId, ViewState,
+    AbsLine, AttachMode, Bell, CellFlags, Cursor, DataMsg, Delta, DirtyRow, History, Modes, Row,
+    Seq, Snapshot, SurfaceExited, SurfaceId, ViewState,
 };
 
 use crate::cwd::CwdTracker;
@@ -434,6 +434,40 @@ impl Surface {
         self.engine.history_len()
     }
 
+    /// The *visible* screen as plain text, newest lines last.
+    ///
+    /// This is what `surface.screen_text` answers with: the viewport only (the
+    /// scrollback is reached with [`Surface::history`]), each row rendered
+    /// with trailing whitespace trimmed, blank rows dropped, and at most
+    /// `max_rows` lines kept — the *last* ones, because the bottom of the
+    /// screen is the recent content.
+    ///
+    /// It packs rows through a scratch style table rather than the Surface's
+    /// own, so a read can never intern a style, never overflow the table and
+    /// never force a Snapshot on the subscribers (grilling Q45): reading text
+    /// is invisible to the data plane.
+    #[must_use]
+    pub fn screen_text(&self, max_rows: usize) -> Vec<String> {
+        if max_rows == 0 {
+            return Vec::new();
+        }
+        let mut scratch = SurfaceStyleTable::new();
+        let cols = self.engine.cols();
+        let mut lines: Vec<String> = Vec::new();
+        for line in 0..self.engine.rows() {
+            let row = self.engine.row(line, &mut scratch);
+            let text = row_text(&row, cols);
+            let trimmed = text.trim_end();
+            if !trimmed.is_empty() {
+                lines.push(trimmed.to_owned());
+            }
+        }
+        if lines.len() > max_rows {
+            lines.drain(..lines.len() - max_rows);
+        }
+        lines
+    }
+
     /// Renders a page of history, answering `FetchHistory` (§8).
     ///
     /// **Note:** [`st_proto::History`] carries no style table, so the rows
@@ -814,6 +848,36 @@ impl Surface {
     }
 }
 
+/// One packed row as plain text (`02-protocol.md` §4.4, §5.1–5.2).
+///
+/// The same rules `st probe` renders with, minus the styles: a
+/// [`CellFlags::WIDE_SPACER`] is the second half of a wide glyph and prints
+/// nothing, a `GRAPHEME_EXT` cell prints its cluster from `extras`, and an
+/// empty cell prints a space.
+fn row_text(row: &Row, cols: u16) -> String {
+    let width = (cols as usize).min(row.cells.len());
+    let mut out = String::with_capacity(width);
+    for cell in &row.cells[..width] {
+        if cell.flags.contains(CellFlags::WIDE_SPACER) {
+            continue;
+        }
+        if cell.flags.contains(CellFlags::GRAPHEME_EXT) {
+            match row.grapheme(*cell) {
+                Some(cluster) => out.push_str(cluster),
+                None => out.push('\u{FFFD}'),
+            }
+            continue;
+        }
+        match char::from_u32(cell.codepoint) {
+            // A zero codepoint is a cell the engine left empty (row-end
+            // filler after a wide glyph, for one).
+            Some('\0') | None => out.push(' '),
+            Some(ch) => out.push(ch),
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
@@ -850,6 +914,46 @@ mod tests {
         assert!(s.take_delta().is_none());
         assert_eq!(s.history_len(), 0);
         assert_eq!(s.history_base(), AbsLine::ZERO);
+    }
+
+    #[test]
+    fn screen_text_is_the_visible_grid_without_blank_rows() {
+        let mut s = fixture(); // 20x4
+        s.feed(b"alpha\r\n\r\nbravo   \r\n");
+        assert_eq!(
+            s.screen_text(40),
+            vec!["alpha".to_string(), "bravo".to_string()],
+            "blank rows are dropped and trailing spaces trimmed"
+        );
+
+        // Wide glyphs print once, not twice, and clusters survive.
+        s.reset();
+        s.feed("日本 e\u{0301}\r\n".as_bytes());
+        assert_eq!(
+            s.screen_text(40),
+            vec!["日本 e\u{0301}".to_string()],
+            "the wide glyph prints once and the grapheme keeps its combining mark"
+        );
+    }
+
+    #[test]
+    fn screen_text_keeps_the_last_max_rows_and_never_touches_the_style_table() {
+        let mut s = fixture(); // 20x4, so the grid scrolls
+        let before = s.styles.generation();
+        s.feed(b"\x1b[31mone\r\ntwo\r\nthree\r\nfour\r\nfive\r\n");
+        // The viewport is the last four lines; the rest went to History.
+        assert_eq!(
+            s.screen_text(40),
+            vec!["three".to_string(), "four".to_string(), "five".to_string()]
+        );
+        assert_eq!(
+            s.screen_text(2),
+            vec!["four".to_string(), "five".to_string()],
+            "the tail is what matters"
+        );
+        assert!(s.screen_text(0).is_empty());
+        assert_eq!(s.styles.generation(), before);
+        assert_eq!(s.styles.len(), 1, "reading text interns no styles");
     }
 
     #[test]

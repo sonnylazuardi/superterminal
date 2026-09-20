@@ -50,6 +50,11 @@ export interface Command {
   /** Stable id, e.g. `tab.new`. Also the key for config keybinding overrides. */
   id: string;
   title: string;
+  /**
+   * One line on what the command does, in plain words. Shown to the AI ranker
+   * beside the title (08 Q3); the local fuzzy scorer matches titles only.
+   */
+  description: string;
   /** Platform-resolved at registry build time. */
   shortcut: Keybinding[];
   /**

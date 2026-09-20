@@ -25,6 +25,20 @@ against a WSL server, exe + MSI included). Planning history is preserved below.
   mouse reporting, scrollbar + lazy history, resize, IME/focus handling),
   React chrome (sidebar/strip toggle, palette, toasts, banners, keybindings),
   server auto-spawn and reconnect.
+- **Palette** (⌘K on macOS, Ctrl+K on Windows/Linux): commands, tabs and
+  sessions in one list. Type part of a tab's title, directory, session — or of
+  anything **visible on that tab's screen** — to jump to it. Searching screen
+  text is local and needs no key: the Server answers with the visible rows of
+  every tab in the session and the match runs on your machine, with the
+  matching line shown as evidence. With an OpenCode Zen key (palette →
+  **AI Settings…**, or `[ai]` in `config.toml`) plain-words queries such as
+  "kill this tab", "split below" or "the frontend one" are also ranked by
+  [Jev](https://opencode.ai/docs/zen/), TypeSafe's decision model. What leaves
+  the machine then is the query, command titles, tab titles, working
+  directories and session names. Screen text is sent **only** if you turn on
+  `[ai] screen_context` (off by default), and is redacted for secrets and cut
+  to a short excerpt first. Without a key the palette is fully local. Plan and
+  decisions: [`docs/plan/08-jev-palette.md`](./docs/plan/08-jev-palette.md).
 - **Platforms**: Linux/WSLg and native Windows (MSVC build, Direct3D,
   per-user MSI, no-console exe) live against a WSL daemon; macOS runs on
   Apple silicon (Metal, CoreText) and packages as an ad-hoc signed `.app` +

@@ -266,6 +266,14 @@ export type Req =
   | { t: 'surface.create'; id: number; spawn: SpawnSpec }
   | { t: 'surface.kill'; id: number; surface: SurfaceId; signal?: Signal }
   | { t: 'surface.rename'; id: number; surface: SurfaceId; user_title: string | null }
+  /**
+   * The visible screen of each Surface as plain text, for searching what is on
+   * screen. Blank rows are dropped, trailing whitespace is trimmed, and only
+   * the last `max_rows` lines come back (default 40, clamped to 200) — the
+   * bottom of the screen is the recent content. Scrollback is not included and
+   * unknown ids are omitted from `screens` rather than failing the batch.
+   */
+  | { t: 'surface.screen_text'; id: number; surfaces: SurfaceId[]; max_rows?: number }
   // view state (Q17, Q24) — tooling/tests only; the app never sends this (Q43)
   | {
       t: 'view.set';
@@ -277,6 +285,24 @@ export type Req =
   // server
   | { t: 'server.status'; id: number }
   | { t: 'server.shutdown'; id: number; force?: boolean };
+
+/** One Surface's visible screen (`surface.screen_text`). */
+export interface ScreenText {
+  surface: SurfaceId;
+  /** Visible rows, top to bottom; trimmed, blank rows dropped. */
+  lines: string[];
+}
+
+/** Result of `surface.screen_text`; Surfaces that do not exist are missing. */
+export interface ScreenTextResult {
+  screens: ScreenText[];
+}
+
+/** `max_rows` when the request leaves it out. */
+export const DEFAULT_SCREEN_TEXT_ROWS = 40;
+
+/** The ceiling the server clamps `max_rows` to. */
+export const MAX_SCREEN_TEXT_ROWS = 200;
 
 export interface ServerStatus {
   build_id: string;
@@ -311,6 +337,7 @@ export interface ResultMap {
   'surface.create': { surface: SurfaceId };
   'surface.kill': Record<string, never>;
   'surface.rename': { revision: number };
+  'surface.screen_text': ScreenTextResult;
   'view.set': { revision: number };
   'server.status': ServerStatus;
   'server.shutdown': Record<string, never>;
