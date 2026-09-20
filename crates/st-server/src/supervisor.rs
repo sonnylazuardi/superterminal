@@ -879,6 +879,12 @@ impl SurfaceSpawner for SurfaceSupervisor {
         }
     }
 
+    fn screen_text(&self, id: SurfaceId, max_rows: usize) -> Option<Vec<String>> {
+        // The Server's own authoritative grid, read under the Surface's lock;
+        // no Replica and no data-plane round trip is involved.
+        Some(self.slot(id)?.lock().screen_text(max_rows))
+    }
+
     fn scrollback_usage(&self) -> Vec<ScrollbackUsage> {
         self.surfaces()
             .into_iter()
@@ -1064,6 +1070,34 @@ mod tests {
             usage[0].scrollback_bytes,
             usage[0].scrollback_rows * 20 * APPROX_BYTES_PER_CELL,
             "bytes are rows × cols × the approximate cell size"
+        );
+    }
+
+    #[test]
+    fn screen_text_reads_the_authoritative_grid_and_skips_unknown_ids() {
+        let sup = SurfaceSupervisor::for_tests();
+        let slot = sup.insert_surface(engine_surface(40, 6)).expect("insert");
+        slot.lock()
+            .feed(b"$ cargo test   \r\n\r\n   Compiling st-server\r\n");
+
+        let lines = SurfaceSpawner::screen_text(&*sup, SurfaceId(7), 40).expect("a known Surface");
+        assert_eq!(
+            lines,
+            vec![
+                "$ cargo test".to_string(),
+                "   Compiling st-server".to_string()
+            ],
+            "the viewport, trimmed, with the blank row dropped"
+        );
+        assert_eq!(
+            SurfaceSpawner::screen_text(&*sup, SurfaceId(7), 1),
+            Some(vec!["   Compiling st-server".to_string()]),
+            "max_rows keeps the bottom of the screen"
+        );
+        assert_eq!(
+            SurfaceSpawner::screen_text(&*sup, SurfaceId(404), 40),
+            None,
+            "an unknown Surface is not an error, it is nothing"
         );
     }
 

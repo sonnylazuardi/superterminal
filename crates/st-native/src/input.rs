@@ -198,6 +198,37 @@ mod tests {
         }
     }
 
+    /// 08 Q8: the palette chord must reach the app whatever modes the
+    /// program negotiated, so the passthrough check comes before encoding.
+    #[test]
+    fn ctrl_k_passes_through_even_under_the_kitty_protocol() {
+        let passthrough = pass(&["ctrl-k"]);
+        for modes in [Modes::empty(), Modes::KITTY_KEYBOARD] {
+            let outcome = handle_key(
+                "k",
+                Some("\u{b}"),
+                Mods::CTRL,
+                &passthrough,
+                modes,
+                &KeyConfig::default(),
+            );
+            assert!(
+                matches!(outcome, KeyOutcome::Passthrough),
+                "{modes:?}: {outcome:?}"
+            );
+        }
+        // And without the chord in the list it is still terminal input.
+        let outcome = handle_key(
+            "k",
+            Some("\u{b}"),
+            Mods::CTRL,
+            &PassthroughKeys::default(),
+            Modes::empty(),
+            &KeyConfig::default(),
+        );
+        assert!(matches!(outcome, KeyOutcome::Send(_)), "{outcome:?}");
+    }
+
     #[test]
     fn a_plain_letter_is_its_own_byte() {
         assert_eq!(send("a", Some("a"), Mods::empty()), b"a");

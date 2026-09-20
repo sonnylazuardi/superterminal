@@ -61,7 +61,37 @@ export interface SurfaceView {
   rows: number;
 }
 
-export type PaletteMode = 'commands' | 'sessions';
+/** `all`: commands, tabs and sessions in one list; `sessions`: sessions only. */
+export type PaletteMode = 'all' | 'sessions';
+
+/** Where the AI provider key came from, in precedence order (08 §D Q15). */
+export type AiKeySource = 'config' | 'app' | 'env' | 'opencode' | 'none';
+
+/**
+ * What the chrome may know about the AI (Jev) integration. Never the key
+ * itself: only its source and its last four characters.
+ */
+export interface AiStatus {
+  /** `[ai] palette` from config; false hides every AI affordance. */
+  enabled: boolean;
+  source: AiKeySource;
+  last4: string | null;
+  endpoint: string;
+  model: string;
+  /** `off`: no key; `ready`: usable; `disabled`: an auth/model error this session. */
+  status: 'off' | 'ready' | 'disabled';
+  lastError: string | null;
+  /** Round trip of the last successful call, for the settings dialog. */
+  lastLatencyMs: number | null;
+  /** A palette ranking request is in flight. */
+  busy: boolean;
+  /**
+   * Send the visible screen text of the tabs along with a palette query
+   * (`[ai] screen_context`, off by default). The AI Settings dialog flips it
+   * for the session only; the program never writes config.toml.
+   */
+  screenContext: boolean;
+}
 
 export interface Toast {
   id: number;
@@ -100,6 +130,9 @@ export interface UiState {
   paletteIndex: number;
   /** The About dialog (version + project link), opened by `app.about`. */
   aboutOpen: boolean;
+  /** The AI Settings dialog (key entry + status), opened by `ai.settings`. */
+  aiSettingsOpen: boolean;
+  ai: AiStatus;
   verticalTabs: boolean;
   /** Sidebar column width in logical px (Client State). */
   sidebarWidth: number;
@@ -143,12 +176,16 @@ export type UiAction =
   | { type: 'connection.set'; status: ConnectionStatus; serverVersion?: string; serverBuildId?: string; error?: string }
   | { type: 'palette.open'; mode?: PaletteMode }
   | { type: 'palette.close' }
+  | { type: 'palette.toggle' }
   | { type: 'palette.setMode'; mode: PaletteMode }
   | { type: 'palette.setQuery'; query: string }
   | { type: 'palette.move'; delta: number; count: number }
   | { type: 'palette.setIndex'; index: number }
   | { type: 'about.open' }
   | { type: 'about.close' }
+  | { type: 'aiSettings.open' }
+  | { type: 'aiSettings.close' }
+  | { type: 'ai.setStatus'; status: Partial<AiStatus> }
   | { type: 'ui.toggleVerticalTabs' }
   | { type: 'ui.setVerticalTabs'; value: boolean }
   | { type: 'ui.setSidebarWidth'; width: number }

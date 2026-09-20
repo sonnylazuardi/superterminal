@@ -29,6 +29,7 @@ import { selectActiveSurface } from '../state/selectors.js';
 import { displayTitle } from '../state/title.js';
 import { debug } from '../util/debug.js';
 import { About } from './About.js';
+import { AiSettings } from './AiSettings.js';
 import { Banner, StatusToasts } from './Banner.js';
 import { CommandPalette } from './CommandPalette.js';
 import { Divider } from './Divider.js';
@@ -62,6 +63,7 @@ function AppFrame() {
   const paletteOpen = useWorkspace((s) => s.ui.paletteOpen);
   const menuOpen = useWorkspace((s) => s.ui.menu !== null);
   const aboutOpen = useWorkspace((s) => s.ui.aboutOpen);
+  const aiSettingsOpen = useWorkspace((s) => s.ui.aiSettingsOpen);
   const sidebarWidth = useWorkspace((s) => s.ui.sidebarWidth);
 
   const onKeyDown = (event: KeyEventLike) => {
@@ -69,7 +71,7 @@ function AppFrame() {
     // `<input>` handles them, so only bail out for those keys (⌘K still
     // toggles session mode).
     if (
-      (paletteOpen || menuOpen || aboutOpen) &&
+      (paletteOpen || menuOpen || aboutOpen || aiSettingsOpen) &&
       ['escape', 'up', 'down', 'enter'].includes(event.key ?? '')
     ) {
       return;
@@ -184,6 +186,7 @@ function AppFrame() {
       )}
       <CommandPalette />
       <About />
+      <AiSettings />
       <Menu />
       <StatusToasts />
       <WindowSizeTracker />

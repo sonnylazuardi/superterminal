@@ -6,7 +6,9 @@
 
 import { expect, test } from 'bun:test';
 import {
+  DEFAULT_SCREEN_TEXT_ROWS,
   ERROR_CODES,
+  MAX_SCREEN_TEXT_ROWS,
   PROTO_VERSION,
   PROTO_VERSION_STRING,
   formatProtoVersion,
@@ -26,6 +28,8 @@ import {
   type OkRes,
   type Reject,
   type RejectReason,
+  type ScreenText,
+  type ScreenTextResult,
   type Req,
   type ReqParams,
   type RequestType,
@@ -166,10 +170,16 @@ const requests: Req[] = [
   { t: 'tab.reorder', id: 12, tab: 12, index: 0 },
   { t: 'tab.move', id: 13, tab: 12, to_session: 2, index: 1 },
   { t: 'tab.set_active', id: 14, tab: 12 },
+  // panes (ADR 0009)
+  { t: 'tab.split', id: 24, tab: 12, pane: 9, axis: 'row', spawn },
+  { t: 'pane.close', id: 25, tab: 12, pane: 9, if_revision: 41 },
+  { t: 'tab.set_ratio', id: 26, tab: 12, path: [1, 0], ratio: 0.25 },
   { t: 'surface.create', id: 15, spawn },
   { t: 'surface.kill', id: 16, surface: 9, signal: 'TERM' },
   { t: 'surface.rename', id: 17, surface: 9, user_title: 'build' },
   { t: 'surface.rename', id: 18, surface: 9, user_title: null },
+  { t: 'surface.screen_text', id: 22, surfaces: [9, 10] },
+  { t: 'surface.screen_text', id: 23, surfaces: [9], max_rows: 20 },
   { t: 'view.set', id: 19, surface: 9, scroll_offset: 12, selection: null },
   { t: 'server.status', id: 20 },
   { t: 'server.shutdown', id: 21, force: true },
@@ -189,9 +199,13 @@ const requestTypes = [
   'tab.reorder',
   'tab.move',
   'tab.set_active',
+  'tab.split',
+  'pane.close',
+  'tab.set_ratio',
   'surface.create',
   'surface.kill',
   'surface.rename',
+  'surface.screen_text',
   'view.set',
   'server.status',
   'server.shutdown',
@@ -206,6 +220,25 @@ test('every request variant is constructible and every tag is covered', () => {
     expect(requests.some((r) => r.t === t)).toBe(true);
   }
   expect(signals).toHaveLength(3);
+});
+
+/* -------------------------------------------------- surface.screen_text -- */
+
+const screenText: ScreenText = { surface: 9, lines: ['$ cargo test', 'test result: ok.'] };
+const screenTextResult: ScreenTextResult = { screens: [screenText] };
+
+type _ScreenTextParams = Expect<
+  Equal<ReqParams<'surface.screen_text'>, { surfaces: number[]; max_rows?: number }>
+>;
+type _ScreenTextResult = Expect<Equal<ResOk<'surface.screen_text'>, ScreenTextResult>>;
+
+test('screen text carries the visible lines and omits unknown surfaces', () => {
+  expect(screenTextResult.screens[0]!.lines).toHaveLength(2);
+  // A stale id is not reported as an error: it is simply missing.
+  const empty: ScreenTextResult = { screens: [] };
+  expect(empty.screens).toEqual([]);
+  expect(DEFAULT_SCREEN_TEXT_ROWS).toBe(40);
+  expect(MAX_SCREEN_TEXT_ROWS).toBe(200);
 });
 
 /* ------------------------------------------------------- helper generics -- */
@@ -250,9 +283,15 @@ const results: { [K in RequestType]: ResultMap[K] } = {
   'tab.reorder': { revision: 49 },
   'tab.move': { revision: 50 },
   'tab.set_active': { revision: 51 },
+  'tab.split': { tab: 13, surface: 12, revision: 54 },
+  'pane.close': { revision: 55 },
+  'tab.set_ratio': { revision: 56 },
   'surface.create': { surface: 11 },
   'surface.kill': {},
   'surface.rename': { revision: 52 },
+  'surface.screen_text': {
+    screens: [{ surface: 9, lines: ['$ cargo test', 'test result: ok.'] }],
+  },
   'view.set': { revision: 53 },
   'server.status': {
     build_id: 'cafebabe',

@@ -24,8 +24,9 @@ use std::sync::Arc;
 
 use serde_json::{json, Value};
 use st_proto::control::{
-    Empty, ErrorBody, ErrorCode, Ev, KillSignal, Layout, Revision, Selection, SessionCreated,
-    SessionList, SurfaceCreated, TabCreated, TabSplitResult,
+    Empty, ErrorBody, ErrorCode, Ev, KillSignal, Layout, Revision, ScreenText, ScreenTextResult,
+    Selection, SessionCreated, SessionList, SurfaceCreated, TabCreated, TabSplitResult,
+    DEFAULT_SCREEN_TEXT_ROWS, MAX_SCREEN_TEXT_ROWS,
 };
 use st_proto::{Req, SessionId, SurfaceId, TabId};
 use tokio::sync::{broadcast, mpsc, oneshot};
@@ -614,6 +615,31 @@ impl WorkspaceActor {
                     .kill(*surface, signal.unwrap_or_default())
                     .map_err(|e| e.to_error_body())?;
                 value(Empty {})
+            }
+
+            Req::SurfaceScreenText {
+                surfaces, max_rows, ..
+            } => {
+                let max_rows = usize::from(
+                    max_rows
+                        .unwrap_or(DEFAULT_SCREEN_TEXT_ROWS)
+                        .min(MAX_SCREEN_TEXT_ROWS),
+                );
+                // An id the Server no longer knows is silently dropped: a
+                // client batching the Surfaces it last saw must not have the
+                // whole read fail because one Tab closed meanwhile.
+                let screens = surfaces
+                    .iter()
+                    .filter_map(|surface| {
+                        self.spawner
+                            .screen_text(*surface, max_rows)
+                            .map(|lines| ScreenText {
+                                surface: *surface,
+                                lines,
+                            })
+                    })
+                    .collect();
+                value(ScreenTextResult { screens })
             }
 
             Req::SurfaceRename {

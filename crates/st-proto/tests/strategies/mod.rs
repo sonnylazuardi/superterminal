@@ -548,6 +548,16 @@ pub fn req() -> impl Strategy<Value = Req> {
                 scroll_offset,
                 selection
             }),
+        (
+            any::<u32>(),
+            vec(surface_id(), 0..4),
+            option::of(any::<u16>())
+        )
+            .prop_map(|(id, surfaces, max_rows)| Req::SurfaceScreenText {
+                id,
+                surfaces,
+                max_rows
+            }),
         any::<u32>().prop_map(|id| Req::ServerStatus { id }),
         (any::<u32>(), option::of(any::<bool>()))
             .prop_map(|(id, force)| Req::ServerShutdown { id, force }),

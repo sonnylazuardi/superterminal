@@ -18,6 +18,7 @@ import { sameWindowPlacement } from './client-state.js';
 import { clampRatio, clampSidebarWidth } from './layout.js';
 import { clampFontZoom } from './zoom.js';
 import type {
+  AiStatus,
   ConnectionState,
   ServerEvent,
   SessionId,
@@ -31,12 +32,27 @@ import type {
   WorkspaceState,
 } from './types.js';
 
+export const initialAiStatus: AiStatus = {
+  enabled: true,
+  source: 'none',
+  last4: null,
+  endpoint: '',
+  model: '',
+  status: 'off',
+  lastError: null,
+  lastLatencyMs: null,
+  busy: false,
+  screenContext: false,
+};
+
 export const initialUiState: UiState = {
   paletteOpen: false,
-  paletteMode: 'commands',
+  paletteMode: 'all',
   paletteQuery: '',
   paletteIndex: 0,
   aboutOpen: false,
+  aiSettingsOpen: false,
+  ai: initialAiStatus,
   verticalTabs: false,
   sidebarWidth: 220,
   fontZoom: 0,
@@ -62,6 +78,21 @@ export const initialWorkspaceState: WorkspaceState = {
   surfaces: {},
   ui: initialUiState,
 };
+
+function sameAiStatus(a: AiStatus, b: AiStatus): boolean {
+  return (
+    a.enabled === b.enabled &&
+    a.source === b.source &&
+    a.last4 === b.last4 &&
+    a.endpoint === b.endpoint &&
+    a.model === b.model &&
+    a.status === b.status &&
+    a.lastError === b.lastError &&
+    a.lastLatencyMs === b.lastLatencyMs &&
+    a.busy === b.busy &&
+    a.screenContext === b.screenContext
+  );
+}
 
 /** Fold a `workspace.get`/`workspace.subscribe` result into the event stream. */
 export function snapshotEvent(snapshot: WorkspaceSnapshot): ServerEvent {
@@ -280,6 +311,7 @@ export function applyUiAction(state: WorkspaceState, action: UiAction): Workspac
       return withUi(state, {
         paletteOpen: true,
         aboutOpen: false,
+        aiSettingsOpen: false,
         paletteMode: action.mode ?? ui.paletteMode,
         paletteQuery: '',
         paletteIndex: 0,
@@ -288,6 +320,18 @@ export function applyUiAction(state: WorkspaceState, action: UiAction): Workspac
     case 'palette.close':
       if (!ui.paletteOpen) return state;
       return withUi(state, { paletteOpen: false, paletteQuery: '', paletteIndex: 0 });
+
+    // ⌘K / Ctrl+K: open the unified list, or close whatever palette is open (08 Q7).
+    case 'palette.toggle':
+      if (ui.paletteOpen) return withUi(state, { paletteOpen: false, paletteQuery: '', paletteIndex: 0 });
+      return withUi(state, {
+        paletteOpen: true,
+        aboutOpen: false,
+        aiSettingsOpen: false,
+        paletteMode: 'all',
+        paletteQuery: '',
+        paletteIndex: 0,
+      });
 
     case 'palette.setMode':
       if (ui.paletteMode === action.mode) return state;
@@ -312,11 +356,37 @@ export function applyUiAction(state: WorkspaceState, action: UiAction): Workspac
     // One Dialog at a time (05 §4): About and the palette displace each other.
     case 'about.open':
       if (ui.aboutOpen) return state;
-      return withUi(state, { aboutOpen: true, paletteOpen: false, paletteQuery: '', paletteIndex: 0 });
+      return withUi(state, {
+        aboutOpen: true,
+        aiSettingsOpen: false,
+        paletteOpen: false,
+        paletteQuery: '',
+        paletteIndex: 0,
+      });
 
     case 'about.close':
       if (!ui.aboutOpen) return state;
       return withUi(state, { aboutOpen: false });
+
+    case 'aiSettings.open':
+      if (ui.aiSettingsOpen) return state;
+      return withUi(state, {
+        aiSettingsOpen: true,
+        aboutOpen: false,
+        paletteOpen: false,
+        paletteQuery: '',
+        paletteIndex: 0,
+      });
+
+    case 'aiSettings.close':
+      if (!ui.aiSettingsOpen) return state;
+      return withUi(state, { aiSettingsOpen: false });
+
+    case 'ai.setStatus': {
+      const ai = { ...ui.ai, ...action.status };
+      if (sameAiStatus(ai, ui.ai)) return state;
+      return withUi(state, { ai });
+    }
 
     case 'ui.toggleVerticalTabs':
       return withUi(state, { verticalTabs: !ui.verticalTabs });

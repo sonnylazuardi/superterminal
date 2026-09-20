@@ -488,3 +488,17 @@ Still open on macOS:
   TODO, so cwd tracking relies on OSC 7 alone.
 - Keyboard input, selection, scrollback and the perf gate are unexercised here:
   bring-up verified rendering and attach, not the full M2 acceptance set.
+
+
+## Palette ranking with Jev (08)
+
+`⌘K` / `Ctrl+K` opens the unified palette (commands, tabs, sessions). With a key
+the settled query is ranked by Jev through OpenCode Zen; without one the palette
+is local. Key sources in order: `[ai] api_key`, the app's **AI Settings…** dialog
+(`secrets.json` in the Client State dir), `$SUPERTERMINAL_AI_API_KEY`, then
+`~/.local/share/opencode/auth.json`. `DEBUG=st:ai` logs the key *source*, every
+ranking answer and its latency. `bun scripts/jev-palette-probe.ts` re-runs the
+fixture set in `packages/app/src/ai/fixtures/` against the live endpoint and is
+the check to run before touching the thresholds in `ai/palette-rank.ts`.
+Plain Ctrl+K is taken from readline on Linux/Windows by decision (08 Q5);
+`"palette.commands" = "ctrl+shift+p"` in `[keybindings]` gives it back.

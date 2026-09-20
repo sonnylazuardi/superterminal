@@ -7,6 +7,7 @@
  * native module is not required to exercise it).
  */
 
+import { createAiService, type AiService } from './ai/service.js';
 import { buildRegistry, type CommandRegistry } from './commands/registry.js';
 import type { AppBridge, CommandContext } from './commands/types.js';
 import { loadConfigAndWarn } from './config/load.js';
@@ -32,6 +33,7 @@ export interface Bootstrapped {
   tokens: Tokens;
   store: WorkspaceStore;
   registry: CommandRegistry;
+  ai: AiService;
   client: ControlClient;
   commandBus: NativeCommandBus;
   commandContext: CommandContext;
@@ -117,12 +119,17 @@ export function bootstrap(options: BootstrapOptions): Bootstrapped {
     platform: platform.platform,
   };
 
+  // Resolves the Jev key (config → app store → env → OpenCode) and mirrors
+  // its source, never the key, into `ui.ai` (08 Q15).
+  const ai = createAiService({ config, store });
+
   return {
     config,
     platform,
     tokens,
     store,
     registry,
+    ai,
     client,
     commandBus,
     commandContext,

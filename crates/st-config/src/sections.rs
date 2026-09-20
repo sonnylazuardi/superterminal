@@ -355,6 +355,50 @@ impl Default for ServerConfig {
     }
 }
 
+/// `[ai]` — optional Jev ranking for the command palette
+/// (`docs/plan/08-jev-palette.md` §D). **Client-only**: parsed here so
+/// `st config init` documents it and `st config check` does not warn about
+/// it; the server never reads it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AiConfig {
+    /// Provider key. Unset means: the key stored from the app's AI Settings
+    /// dialog, then `$SUPERTERMINAL_AI_API_KEY`, then OpenCode's own login.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
+    /// Rank palette rows with Jev when a key is found.
+    pub palette: bool,
+    /// Provider endpoint (System One shape). Default: OpenCode Zen.
+    pub endpoint: String,
+    /// Model id at that endpoint.
+    pub model: String,
+    /// Send the visible screen text of your tabs along with the palette
+    /// query, so a tab can be found by what it shows. **Off by default**:
+    /// screen text is the most sensitive thing the client holds. Secrets are
+    /// masked before anything is sent, but masking is a safety net, not a
+    /// guarantee, so this stays something you turn on deliberately.
+    pub screen_context: bool,
+}
+
+impl AiConfig {
+    /// OpenCode Zen's System One passthrough.
+    pub const DEFAULT_ENDPOINT: &'static str = "https://opencode.ai/zen/v1/systemone";
+    /// The Jev release this was tuned against.
+    pub const DEFAULT_MODEL: &'static str = "jev-1.13";
+}
+
+impl Default for AiConfig {
+    fn default() -> Self {
+        Self {
+            api_key: None,
+            palette: true,
+            endpoint: Self::DEFAULT_ENDPOINT.to_owned(),
+            model: Self::DEFAULT_MODEL.to_owned(),
+            screen_context: false,
+        }
+    }
+}
+
 /// `[theme]` — the terminal palette (Q48: also used by the server to answer
 /// OSC 10/11 colour queries).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]

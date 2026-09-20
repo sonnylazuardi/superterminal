@@ -14,6 +14,7 @@ import type { WorkspaceState } from '../state/types.js';
 import type { WorkspaceStore } from '../state/workspace-store.js';
 import type { Tokens } from '../theme/tokens.js';
 import type { NativeCommandBus } from '../native/bridge.js';
+import type { AiService } from '../ai/service.js';
 
 export interface AppServices {
   store: WorkspaceStore;
@@ -25,6 +26,8 @@ export interface AppServices {
   config: Config;
   /** One-shot `<terminal-grid>` commands (copy/paste/clear). */
   commandBus: NativeCommandBus;
+  /** Jev ranking and key storage (08); null when the app runs without it. */
+  ai: AiService | null;
   /**
    * Socket the daemon listens on. Passed down to `<terminal-grid>`, which
    * opens its own data-plane connection to it (Q13/Q14).

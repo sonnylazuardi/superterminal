@@ -309,6 +309,47 @@ async fn tab_create_needs_exactly_one_of_spawn_and_surface() {
 }
 
 #[tokio::test]
+async fn surface_screen_text_reads_the_visible_screen_and_omits_unknown_ids() {
+    let harness = Harness::start().await;
+    let mut client = harness.client().await;
+
+    let snapshot = client.ok(json!({ "t": "workspace.get" })).await;
+    let surface = snapshot["surfaces"][0]["id"].as_u64().unwrap();
+    harness.spawner.set_screen_text(
+        st_proto::SurfaceId(u32::try_from(surface).unwrap()),
+        ["$ cargo test", "   Compiling st-server", "test result: ok."],
+    );
+
+    // The known Surface answers; the stale id is dropped, not an error.
+    let result = client
+        .ok(json!({ "t": "surface.screen_text", "surfaces": [surface, 9999] }))
+        .await;
+    assert_eq!(
+        result,
+        json!({ "screens": [{
+            "surface": surface,
+            "lines": ["$ cargo test", "   Compiling st-server", "test result: ok."],
+        }]})
+    );
+
+    // `max_rows` keeps the tail, the recent content.
+    let capped = client
+        .ok(json!({ "t": "surface.screen_text", "surfaces": [surface], "max_rows": 1 }))
+        .await;
+    assert_eq!(capped["screens"][0]["lines"], json!(["test result: ok."]));
+
+    // A batch of nothing but stale ids is an empty list, still not an error.
+    let empty = client
+        .ok(json!({ "t": "surface.screen_text", "surfaces": [9998, 9999] }))
+        .await;
+    assert_eq!(empty, json!({ "screens": [] }));
+
+    // Reading text changes nothing: the revision is where it was.
+    let after = client.ok(json!({ "t": "workspace.get" })).await;
+    assert_eq!(after["workspace"]["revision"], 0);
+}
+
+#[tokio::test]
 async fn surfaces_are_renamed_and_killed() {
     let harness = Harness::start().await;
     let mut client = harness.client().await;

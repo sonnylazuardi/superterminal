@@ -145,6 +145,7 @@ describe('registry composition', () => {
       'edit.paste',
       'surface.clearScrollback',
       'palette.commands',
+      'ai.settings',
       'app.reconnect',
       'app.quit',
     ]);
@@ -186,7 +187,8 @@ describe('platform-aware modifiers', () => {
     const registry = buildRegistry({ platform: 'darwin' });
     expect(registry.shortcutHint('tab.new')).toBe('⌘T');
     expect(registry.shortcutHint('tab.close')).toBe('⌘W');
-    expect(registry.shortcutHint('palette.commands')).toBe('⇧⌘P');
+    expect(registry.shortcutHint('palette.commands')).toBe('⌘K');
+    expect(registry.shortcutHint('session.switch')).toBe('⇧⌘S');
     expect(registry.shortcutHint('surface.clearScrollback')).toBe('⇧⌘K');
     expect(registry.shortcutHint('app.reconnect')).toBe('');
   });
@@ -194,7 +196,8 @@ describe('platform-aware modifiers', () => {
   test('Linux hints use Ctrl+Shift', () => {
     const registry = buildRegistry({ platform: 'linux' });
     expect(registry.shortcutHint('tab.new')).toBe('Ctrl+Shift+T');
-    expect(registry.shortcutHint('session.switch')).toBe('Ctrl+Shift+K');
+    expect(registry.shortcutHint('session.switch')).toBe('Ctrl+Shift+S');
+    expect(registry.shortcutHint('palette.commands')).toBe('Ctrl+K');
     expect(registry.shortcutHint('surface.clearScrollback')).toBe('Ctrl+Shift+L');
   });
 
@@ -218,7 +221,7 @@ describe('pane commands (ADR 0009)', () => {
   });
 
   test('no two commands share a keystroke on either platform', () => {
-    for (const platform of ['darwin', 'linux'] as const) {
+    for (const platform of ['darwin', 'linux', 'win32'] as const) {
       const registry = buildRegistry({ platform });
       const seen = new Map<string, string>();
       for (const command of registry.commands) {
@@ -357,6 +360,11 @@ describe('passthroughShortcuts', () => {
     expect(list).toContain('alt-1');
     expect(list).toContain('alt-9');
     expect(list).not.toContain('ctrl-t'); // plain Ctrl+T stays terminal input
+    // 08 Q5: the one plain-Ctrl chord, by decision; the alias stays.
+    expect(list).toContain('ctrl-k');
+    expect(list).toContain('ctrl-shift-p');
+    expect(list).toContain('ctrl-shift-s');
+    expect(list).not.toContain('ctrl-shift-k');
     // Zoom: the Windows Terminal chords, not the Ctrl+Shift `mod` form.
     expect(list).toContain('ctrl-=');
     expect(list).toContain('ctrl--');
@@ -369,6 +377,8 @@ describe('passthroughShortcuts', () => {
     expect(list).toContain('cmd-t');
     expect(list).toContain('cmd-w');
     expect(list).toContain('shift-cmd-p');
+    expect(list).toContain('cmd-k');
+    expect(list).toContain('shift-cmd-s');
     expect(list).toContain('cmd-1');
     expect(list).toContain('ctrl-tab');
     expect(list).toContain('cmd-=');
@@ -661,7 +671,7 @@ describe('command behaviour', () => {
   test('about opens its dialog and closes the palette', async () => {
     const registry = buildRegistry({ platform: 'linux' });
     const { ctx, store } = harness();
-    store.dispatch({ type: 'palette.open', mode: 'commands' });
+    store.dispatch({ type: 'palette.open', mode: 'all' });
     await registry.run('app.about', ctx);
     expect(store.getState().ui.aboutOpen).toBe(true);
     expect(store.getState().ui.paletteOpen).toBe(false);
@@ -708,5 +718,53 @@ describe('fuzzy palette matching', () => {
     expect(results.every((r) => !r.command.hidden)).toBe(true);
     expect(results[0]!.command.title.toLowerCase()).toContain('tab');
     expect(filterCommands(registry.commands, 'qqqq', store.getState())).toEqual([]);
+  });
+});
+
+/* ------------------------------------------------ 08: ⌘K / Ctrl+K palette -- */
+
+describe('unified palette shortcut (08 Q5–Q7)', () => {
+  test('⌘K on macOS, plain Ctrl+K on Linux and Windows, ⇧P alias everywhere', () => {
+    expect(buildRegistry({ platform: 'darwin' }).passthroughShortcuts).toContain('cmd-k');
+    expect(buildRegistry({ platform: 'linux' }).passthroughShortcuts).toContain('ctrl-k');
+    expect(buildRegistry({ platform: 'win32' }).passthroughShortcuts).toContain('ctrl-k');
+    expect(buildRegistry({ platform: 'win32' }).shortcutHint('palette.commands')).toBe('Ctrl+K');
+    for (const platform of ['darwin', 'linux', 'win32'] as const) {
+      const registry = buildRegistry({ platform });
+      const alias = registry.byId('palette.commands')!.shortcut[1]!;
+      expect(alias).toEqual({ mods: ['mod', 'shift'], key: 'p' });
+    }
+  });
+
+  test('the chord toggles: open on the first press, closed on the second', () => {
+    const { ctx, store } = harness();
+    const registry = buildRegistry({ platform: 'linux' });
+    void registry.run('palette.commands', ctx);
+    expect(store.getState().ui).toMatchObject({ paletteOpen: true, paletteMode: 'all' });
+    void registry.run('palette.commands', ctx);
+    expect(store.getState().ui.paletteOpen).toBe(false);
+  });
+
+  test('Ctrl+K can be given back to the shell with one override', () => {
+    const registry = buildRegistry({
+      platform: 'linux',
+      overrides: { 'palette.commands': 'ctrl+shift+p' },
+    });
+    expect(registry.passthroughShortcuts).not.toContain('ctrl-k');
+    expect(registry.shortcutHint('palette.commands')).toBe('Ctrl+Shift+P');
+  });
+
+  test('every command carries a plain-words description for the ranker', () => {
+    for (const command of buildRegistry({ platform: 'linux' }).commands) {
+      expect(command.description.length).toBeGreaterThan(10);
+    }
+  });
+
+  test('ai.settings opens the AI Settings dialog and displaces the palette', () => {
+    const { ctx, store } = harness();
+    const registry = buildRegistry({ platform: 'linux' });
+    store.dispatch({ type: 'palette.open', mode: 'all' });
+    void registry.run('ai.settings', ctx);
+    expect(store.getState().ui).toMatchObject({ aiSettingsOpen: true, paletteOpen: false });
   });
 });

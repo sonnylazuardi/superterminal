@@ -1,7 +1,8 @@
 /**
- * Command palette (05 §4): one `<anchored>` at top-center, 560 px wide, with an
- * `<input>` and a plain `<div>` list capped at 8 visible rows (nested scrolling
- * is unsupported, so the window of items shifts instead of scrolling).
+ * The command palette (05 §4, 08): one `<anchored>` at top-center, 560 px
+ * wide, with an `<input>` and a plain `<div>` list capped at 8 visible rows
+ * (nested scrolling is unsupported, so the window of items shifts instead of
+ * scrolling).
  *
  * Placement: a Dialog opens at the top centre of the window (CONTEXT.md), so
  * the layer is given an explicit `position`. gpuix's `side`/`align` are
@@ -11,61 +12,117 @@
  * anchor point is absolute and `anchor="topCenter"` centres the layer's top
  * edge on it.
  *
- * Modes: `commands` (⌘⇧P / Ctrl+Shift+P) and `sessions` (⌘K / Ctrl+Shift+K).
- * In sessions mode a trailing row offers **New Session "‹query›"** when the
- * query matches no existing name.
+ * Rows (08 Q1): commands, tabs and sessions in one list (`all`, ⌘K / Ctrl+K),
+ * or sessions only (`sessions`, Switch Session…). Local fuzzy matching is
+ * instant; when a Jev key is configured the settled query is also ranked by
+ * Jev and may promote or fill rows (`ai/palette-rank.ts`). A ✦ marks a row Jev
+ * placed. In sessions mode a trailing row offers **New Session "‹query›"**
+ * when the query matches no existing name.
+ *
+ * Opening the palette also fetches what each Tab is showing
+ * (`use-screen-text.ts`), so a tab can be found by a word that is only on its
+ * screen; the rows re-rank when that lands and are today's rows until it does.
  */
 
-import { filterCommands, type Command } from '../commands/registry.js';
-import { fuzzyScore } from '../commands/registry.js';
-import { selectSessions } from '../state/selectors.js';
-import type { SessionView } from '../state/types.js';
+import { mergeRanking } from '../ai/palette-rank.js';
 import { useFullWorkspace, useRunCommand, useServices, useWorkspace } from './context.js';
+import { aiOffRow, buildRows, type PaletteRow } from './palette-rows.js';
+import { usePaletteRanking } from './use-palette-ranking.js';
+import { useScreenText } from './use-screen-text.js';
 
 const WIDTH = 560;
 const MAX_ROWS = 8;
 
-interface Row {
-  key: string;
-  title: string;
-  hint: string;
-  activate: () => void;
-}
-
 export function CommandPalette() {
-  const { tokens, registry, store, commandContext } = useServices();
+  const { tokens, registry, store, commandContext, ai } = useServices();
   const state = useFullWorkspace();
   const open = state.ui.paletteOpen;
   const mode = state.ui.paletteMode;
   const query = state.ui.paletteQuery;
   const index = state.ui.paletteIndex;
-  const sessions = useWorkspace(selectSessions);
   const run = useRunCommand();
   // Select the primitive, not a fresh object: `useSyncExternalStore` compares
   // selector results by identity and would re-render forever.
   const windowWidth = useWorkspace((s) => s.ui.window.width);
   const vertical = useWorkspace((s) => s.ui.verticalTabs);
+  const aiStatus = useWorkspace((s) => s.ui.ai.status);
+  const aiEnabled = useWorkspace((s) => s.ui.ai.enabled);
+  const screenContext = useWorkspace((s) => s.ui.ai.screenContext);
   const placement = dialogPlacement(windowWidth, tokens, vertical);
+
+  // Fetched once per opening; an empty map is exactly the old palette (08 §H).
+  const screenText = useScreenText({ client: commandContext.client, open, state });
+
+  const built = buildRows({
+    state,
+    commands: registry.commands,
+    mode,
+    query,
+    shortcutHint: (id) => registry.shortcutHint(id),
+    screenText: screenText.screens,
+    screenContext,
+  });
+
+  const ranking = usePaletteRanking({
+    ai: mode === 'all' ? ai : null,
+    store,
+    open,
+    query,
+    candidates: built.candidates,
+    activeTabLabel: built.activeTabLabel,
+  });
 
   if (!open) return null;
 
-  const rows: Row[] =
-    mode === 'commands'
-      ? filterCommands(registry.commands, query, state).map(({ command }) => ({
-          key: command.id,
-          title: command.title,
-          hint: registry.shortcutHint(command.id),
-          activate: () => {
-            store.dispatch({ type: 'palette.close' });
-            run(command.id);
-          },
-        }))
-      : sessionRows(sessions, query, state.activeSessionId);
+  const trimmed = query.trim();
+  const merged = mergeRanking({
+    local: built.local,
+    byKey: built.all,
+    ranking: ranking.forQuery === trimmed ? ranking.ranking : null,
+    selectedIndex: index,
+  });
+  let rows: PaletteRow[] = merged.rows;
+  // The empty state teaches the one setup step (08 Q17).
+  const offerSetup = rows.length === 0 && mode === 'all' && trimmed.length > 0 && aiEnabled && aiStatus === 'off';
+  if (offerSetup) rows = [aiOffRow()];
 
   const clamped = Math.min(index, Math.max(0, rows.length - 1));
   // No inner scroll container: shift the window of items instead.
   const start = Math.max(0, Math.min(clamped - MAX_ROWS + 1, rows.length - MAX_ROWS));
   const visible = rows.slice(Math.max(0, start), Math.max(0, start) + MAX_ROWS);
+
+  const close = () => store.dispatch({ type: 'palette.close' });
+
+  const activate = (row: PaletteRow) => {
+    const target = row.target;
+    switch (target.type) {
+      case 'command':
+        close();
+        run(target.id);
+        return;
+      case 'tab':
+        close();
+        void commandContext.client.request('tab.set_active', { tab: target.id }).catch(() => {
+          store.dispatch({ type: 'toast.push', text: 'Could not switch tab', kind: 'error' });
+        });
+        return;
+      case 'session':
+        close();
+        void commandContext.client.request('session.set_active', { session: target.id }).catch(() => {
+          store.dispatch({ type: 'toast.push', text: 'Could not switch session', kind: 'error' });
+        });
+        return;
+      case 'session.new':
+        close();
+        run('session.new', target.name);
+        return;
+      case 'ai.settings':
+        run('ai.settings');
+        return;
+      default:
+        return;
+    }
+  };
 
   return (
     <anchored
@@ -87,7 +144,7 @@ export function CommandPalette() {
           listener lives on this inner div (see Menu.tsx). */}
       <div
         testId="palette-body"
-        onMouseDownOutside={() => store.dispatch({ type: 'palette.close' })}
+        onMouseDownOutside={close}
         style={{
           display: 'flex',
           flexDirection: 'column',
@@ -95,63 +152,70 @@ export function CommandPalette() {
           gap: tokens.space.xs,
         }}
       >
-        <input
-          testId="palette-input"
-          autoFocus
-          value={query}
-          placeholder={mode === 'commands' ? 'Run a command…' : 'Switch or create a session…'}
-          style={{
-            height: tokens.strip.paletteInputHeight,
-            paddingLeft: tokens.space.lg,
-            paddingRight: tokens.space.lg,
-            marginBottom: tokens.space.md,
-            borderRadius: tokens.radius.tab,
-            backgroundColor: tokens.bg.glass,
-            borderWidth: tokens.border.width,
-            borderColor: tokens.accent,
-            color: tokens.fg.primary,
-            fontSize: tokens.font.paletteInput,
-          }}
-          onChange={(event) =>
-            store.dispatch({
-              type: 'palette.setQuery',
-              query: String(event.value ?? ''),
-            })
-          }
-          // Enter never reaches `onKeyDown`: the gpuix input binds it to its own
-          // Submit action and GPUI consumes a keystroke that matched an action
-          // before key listeners run. Esc/↑/↓ are unbound and do arrive.
-          onSubmit={() => rows[clamped]?.activate()}
-          onKeyDown={(event) => {
-            switch (event.key) {
-              case 'escape':
-                store.dispatch({ type: 'palette.close' });
-                return;
-              case 'down':
-                store.dispatch({
-                  type: 'palette.move',
-                  delta: 1,
-                  count: rows.length,
-                });
-                return;
-              case 'up':
-                store.dispatch({
-                  type: 'palette.move',
-                  delta: -1,
-                  count: rows.length,
-                });
-                return;
-              default:
+        <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', marginBottom: tokens.space.md }}>
+          <input
+            testId="palette-input"
+            autoFocus
+            value={query}
+            placeholder={mode === 'all' ? 'Run a command, jump to a tab…' : 'Switch or create a session…'}
+            style={{
+              flexGrow: 1,
+              height: tokens.strip.paletteInputHeight,
+              paddingLeft: tokens.space.lg,
+              paddingRight: tokens.space.lg,
+              borderRadius: tokens.radius.tab,
+              backgroundColor: tokens.bg.glass,
+              borderWidth: tokens.border.width,
+              borderColor: tokens.accent,
+              color: tokens.fg.primary,
+              fontSize: tokens.font.paletteInput,
+            }}
+            onChange={(event) =>
+              store.dispatch({
+                type: 'palette.setQuery',
+                query: String(event.value ?? ''),
+              })
             }
-          }}
-        />
+            // Enter never reaches `onKeyDown`: the gpuix input binds it to its own
+            // Submit action and GPUI consumes a keystroke that matched an action
+            // before key listeners run. Esc/↑/↓ are unbound and do arrive.
+            onSubmit={() => {
+              const row = rows[clamped];
+              if (row) activate(row);
+            }}
+            onKeyDown={(event) => {
+              switch (event.key) {
+                case 'escape':
+                  close();
+                  return;
+                case 'down':
+                  store.dispatch({ type: 'palette.move', delta: 1, count: rows.length });
+                  return;
+                case 'up':
+                  store.dispatch({ type: 'palette.move', delta: -1, count: rows.length });
+                  return;
+                default:
+              }
+            }}
+          />
+          {/* In-flight dot (08 Q14): the only visible "thinking" state. */}
+          {ranking.inFlight ? (
+            <text
+              testId="palette-thinking"
+              style={{ color: tokens.fg.muted, fontSize: tokens.font.chip, paddingLeft: tokens.space.md }}
+            >
+              ✦
+            </text>
+          ) : null}
+        </div>
         {visible.map((row, i) => {
           const selected = start + i === clamped;
+          const byJev = merged.promoted.has(row.key);
           return (
             <div
               key={row.key}
               testId={`palette-row-${row.key}`}
-              onClick={row.activate}
+              onClick={() => activate(row)}
               style={{
                 // Chrome text is not prose: a press here must not start a text
                 // selection (gpuix `<text>` is selectable by default; this inherits).
@@ -186,12 +250,12 @@ export function CommandPalette() {
               </text>
               <text
                 style={{
-                  color: tokens.fg.muted,
+                  color: byJev ? tokens.accent : tokens.fg.muted,
                   fontSize: tokens.font.chip,
                   flexShrink: 0,
                 }}
               >
-                {row.hint}
+                {byJev ? `✦ ${row.hint}` : row.hint}
               </text>
             </div>
           );
@@ -209,51 +273,13 @@ export function CommandPalette() {
               testId="palette-empty"
               style={{ color: tokens.fg.muted, fontSize: tokens.font.chrome }}
             >
-              No matches
+              {ranking.inFlight ? 'Asking Jev…' : 'No matches'}
             </text>
           </div>
         ) : null}
       </div>
     </anchored>
   );
-
-  function sessionRows(all: SessionView[], q: string, activeSessionId: number | null): Row[] {
-    const matches = all
-      .map((session) => ({ session, score: fuzzyScore(q, session.name) }))
-      .filter((r): r is { session: SessionView; score: number } => r.score !== null)
-      .sort((a, b) => b.score - a.score)
-      .map(({ session }) => ({
-        key: `session-${session.id}`,
-        title: `${session.name}${session.id === activeSessionId ? ' ✓' : ''}`,
-        hint: `${session.tabIds.length} tab${session.tabIds.length === 1 ? '' : 's'}`,
-        activate: () => {
-          store.dispatch({ type: 'palette.close' });
-          void commandContext.client
-            .request('session.set_active', { session: session.id })
-            .catch(() => {
-              store.dispatch({
-                type: 'toast.push',
-                text: 'Could not switch session',
-                kind: 'error',
-              });
-            });
-        },
-      }));
-
-    const exact = all.some((s) => s.name.toLowerCase() === q.trim().toLowerCase());
-    if (q.trim().length > 0 && !exact) {
-      matches.push({
-        key: 'session-new',
-        title: `New Session “${q.trim()}”`,
-        hint: registry.shortcutHint('session.new'),
-        activate: () => {
-          store.dispatch({ type: 'palette.close' });
-          run('session.new', q.trim());
-        },
-      });
-    }
-    return matches;
-  }
 }
 
 /**
@@ -277,4 +303,4 @@ export function dialogPlacement(
 }
 
 /** Exported for the palette-only tests in `05 §9` once a test renderer exists. */
-export type { Command };
+export type { Command } from '../commands/registry.js';

@@ -75,6 +75,28 @@ export const ThemeSchema = z.record(z.string(), z.string()).default({});
 /** commandId -> `"mod+shift+t"`. */
 export const KeybindingsSchema = z.record(z.string(), z.string()).default({});
 
+/**
+ * `[ai]` — the optional Jev ranking for the command palette
+ * (docs/plan/08-jev-palette.md §D). Client-only; the server ignores it.
+ */
+export const AiSchema = z
+  .object({
+    /** Provider key. Unset: the app-stored key, then the env, then OpenCode's login. */
+    apiKey: z.string().optional(),
+    /** Rank palette rows with Jev when a key is found. */
+    palette: z.boolean().default(true),
+    endpoint: z.string().url().default('https://opencode.ai/zen/v1/systemone'),
+    model: z.string().min(1).default('jev-1.13'),
+    /**
+     * Send the visible screen text of your tabs with the palette query, so
+     * they can be found and described by what they show. Off by default:
+     * screen text is the most sensitive thing this app holds, and secrets are
+     * masked (`ai/screen-context.ts`) but masking is not a guarantee.
+     */
+    screenContext: z.boolean().default(false),
+  })
+  .prefault({});
+
 export const ConfigSchema = z.object({
   font: FontSchema,
   window: WindowSchema,
@@ -82,6 +104,7 @@ export const ConfigSchema = z.object({
   terminal: TerminalSchema,
   theme: ThemeSchema,
   keybindings: KeybindingsSchema,
+  ai: AiSchema,
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
@@ -99,6 +122,7 @@ const KEY_ALIASES: Record<string, Record<string, string>> = {
     cursor_blink: 'cursorBlink',
   },
   shell: {},
+  ai: { api_key: 'apiKey', screen_context: 'screenContext' },
 };
 
 /** Tables the server owns; present in the file, ignored by the app. */

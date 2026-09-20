@@ -1,0 +1,30 @@
+{
+  "$comment": "Live fixtures for scripts/jev-palette-probe.ts (08 Q22). `expect` is a row key; null means Jev should doubt any match (any_match < 0.5).",
+  "workspace": {
+    "sessions": [
+      { "id": 1, "name": "Work", "tabs": [
+        { "id": 10, "title": "sonny@wsl:~/projects/api", "cwd": "/home/sonny/projects/api", "busy": true, "active": true },
+        { "id": 11, "title": "frontend", "cwd": "/home/sonny/projects/app", "busy": false },
+        { "id": 12, "title": "sonny@wsl:~/projects/docs", "cwd": "/home/sonny/projects/docs", "exited": true }
+      ] },
+      { "id": 2, "name": "Home", "tabs": [] }
+    ]
+  },
+  "cases": [
+    { "query": "the frontend one", "expect": "tab:11" },
+    { "query": "kill this tab", "expect": "cmd:tab.close" },
+    { "query": "split below", "expect": "cmd:pane.splitDown" },
+    { "query": "new pane on the right", "expect": "cmd:pane.splitRight" },
+    { "query": "work", "expect": "session:1" },
+    { "query": "go home", "expect": "session:2" },
+    { "query": "the dead one", "expect": "tab:12" },
+    { "query": "the busy one", "expect": "tab:10" },
+    { "query": "bigger text", "expect": "cmd:view.zoomIn" },
+    { "query": "make the font smaller", "expect": "cmd:view.zoomOut" },
+    { "query": "the docs tab", "expect": "tab:12" },
+    { "query": "open another shell", "expect": "cmd:tab.new" },
+    { "query": "set up jev", "expect": "cmd:ai.settings" },
+    { "query": "asdfgh", "expect": null },
+    { "query": "~/projects/nothing-here", "expect": null }
+  ]
+}
