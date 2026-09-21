@@ -355,6 +355,20 @@ impl Default for ServerConfig {
     }
 }
 
+/// Which Jev provider the client calls (`[ai] provider`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AiProvider {
+    /// TypeSafe when a TypeSafe key is found (an `apikey_…` key, or
+    /// `$TYPESAFE_API_KEY`), otherwise OpenCode Zen.
+    #[default]
+    Auto,
+    /// TypeSafe's own System One endpoint.
+    Typesafe,
+    /// OpenCode Zen's System One passthrough.
+    Zen,
+}
+
 /// `[ai]` — optional Jev ranking for the command palette
 /// (`docs/plan/08-jev-palette.md` §D). **Client-only**: parsed here so
 /// `st config init` documents it and `st config check` does not warn about
@@ -362,16 +376,26 @@ impl Default for ServerConfig {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AiConfig {
-    /// Provider key. Unset means: the key stored from the app's AI Settings
-    /// dialog, then `$SUPERTERMINAL_AI_API_KEY`, then OpenCode's own login.
+    /// Which provider to call. `auto` picks TypeSafe when a TypeSafe key is
+    /// found, else OpenCode Zen.
+    pub provider: AiProvider,
+    /// Key for the selected provider; with `provider = auto` an `apikey_…`
+    /// key is TypeSafe's, anything else OpenCode Zen's. Unset means: the key
+    /// stored from the app's AI Settings dialog, then the environment, then
+    /// OpenCode's own login.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub api_key: Option<String>,
     /// Rank palette rows with Jev when a key is found.
     pub palette: bool,
-    /// Provider endpoint (System One shape). Default: OpenCode Zen.
-    pub endpoint: String,
-    /// Model id at that endpoint.
-    pub model: String,
+    /// Override of the provider's endpoint (System One shape). Unset: the
+    /// selected provider's own ([`Self::TYPESAFE_ENDPOINT`] or
+    /// [`Self::ZEN_ENDPOINT`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+    /// Override of the model id at that endpoint. Unset: the selected
+    /// provider's own ([`Self::TYPESAFE_MODEL`] or [`Self::ZEN_MODEL`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
     /// Send the visible screen text of your tabs along with the palette
     /// query, so a tab can be found by what it shows. **Off by default**:
     /// screen text is the most sensitive thing the client holds. Secrets are
@@ -381,19 +405,24 @@ pub struct AiConfig {
 }
 
 impl AiConfig {
+    /// TypeSafe's own System One endpoint.
+    pub const TYPESAFE_ENDPOINT: &'static str = "https://api.typesafe.ai/v1/systemone";
+    /// The Jev release at TypeSafe's endpoint (versioned id).
+    pub const TYPESAFE_MODEL: &'static str = "jev-1.13.0";
     /// OpenCode Zen's System One passthrough.
-    pub const DEFAULT_ENDPOINT: &'static str = "https://opencode.ai/zen/v1/systemone";
-    /// The Jev release this was tuned against.
-    pub const DEFAULT_MODEL: &'static str = "jev-1.13";
+    pub const ZEN_ENDPOINT: &'static str = "https://opencode.ai/zen/v1/systemone";
+    /// The Jev release at OpenCode Zen.
+    pub const ZEN_MODEL: &'static str = "jev-1.13";
 }
 
 impl Default for AiConfig {
     fn default() -> Self {
         Self {
+            provider: AiProvider::Auto,
             api_key: None,
             palette: true,
-            endpoint: Self::DEFAULT_ENDPOINT.to_owned(),
-            model: Self::DEFAULT_MODEL.to_owned(),
+            endpoint: None,
+            model: None,
             screen_context: false,
         }
     }

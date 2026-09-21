@@ -493,10 +493,17 @@ Still open on macOS:
 ## Palette ranking with Jev (08)
 
 `⌘K` / `Ctrl+K` opens the unified palette (commands, tabs, sessions). With a key
-the settled query is ranked by Jev through OpenCode Zen; without one the palette
-is local. Key sources in order: `[ai] api_key`, the app's **AI Settings…** dialog
-(`secrets.json` in the Client State dir), `$SUPERTERMINAL_AI_API_KEY`, then
-`~/.local/share/opencode/auth.json`. `DEBUG=st:ai` logs the key *source*, every
+the settled query is ranked by Jev, either directly from TypeSafe
+(`api.typesafe.ai`, model `jev-1.13.0`, ≈ 280 ms warm) or through OpenCode Zen
+(`jev-1.13`, ≈ 600 ms); without one the palette is local. `[ai] provider` is
+`auto` (default), `typesafe` or `zen`; the AI Settings… dialog overrides it and
+remembers the choice in Client State. Key sources in order: `[ai] api_key`, the
+dialog (`secrets.json` in the Client State dir, one key per provider),
+`$TYPESAFE_API_KEY` / `$SUPERTERMINAL_AI_API_KEY`, then
+`~/.local/share/opencode/auth.json` (Zen only). Under `auto` the first key found
+decides the provider, and an `apikey_…` key is TypeSafe's (09).
+`bun scripts/jev-palette-probe.ts --provider typesafe|zen` runs the fixtures
+against one provider. `DEBUG=st:ai` logs the key *source*, every
 ranking answer and its latency. `bun scripts/jev-palette-probe.ts` re-runs the
 fixture set in `packages/app/src/ai/fixtures/` against the live endpoint and is
 the check to run before touching the thresholds in `ai/palette-rank.ts`.

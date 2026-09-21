@@ -6,6 +6,7 @@ import {
   EMPTY_CLIENT_STATE,
   loadClientState,
   parseClientState,
+  rememberedAiProvider,
   serializeClientState,
   type ClientState,
 } from './client-state.js';
@@ -15,11 +16,13 @@ const state = (
   verticalTabs: boolean | null,
   sidebarWidth: number | null = null,
   fontZoom: number | null = null,
+  aiProvider: ClientState['aiProvider'] = null,
 ): ClientState => ({
   window,
   verticalTabs,
   sidebarWidth,
   fontZoom,
+  aiProvider,
 });
 
 describe('clientStatePath', () => {
@@ -152,6 +155,19 @@ describe('parseClientState', () => {
     expect(JSON.parse(serializeClientState(state(null, null, null, 0)))).toEqual({ version: 1 });
   });
 
+  test('the AI provider round-trips, is omitted when never picked, and a bad one is dropped', () => {
+    for (const provider of ['auto', 'typesafe', 'zen'] as const) {
+      const original = state(null, null, null, null, provider);
+      expect(JSON.parse(serializeClientState(original))).toEqual({ version: 1, aiProvider: provider });
+      expect(parseClientState(serializeClientState(original))).toEqual({ state: original, warnings: [] });
+    }
+    expect(JSON.parse(serializeClientState(EMPTY_CLIENT_STATE)).aiProvider).toBeUndefined();
+    const bad = parseClientState('{"verticalTabs":true,"aiProvider":"openai"}');
+    expect(bad.state).toEqual(state(null, true));
+    expect(bad.warnings).toEqual(['[superterminal] client state: remembered AI provider ignored']);
+    expect(parseClientState('{"aiProvider":3}').state.aiProvider).toBeNull();
+  });
+
   test('a sidebar width outside its bounds is dropped; a fractional one rounds', () => {
     expect(parseClientState('{"sidebarWidth":100}')).toEqual({
       state: EMPTY_CLIENT_STATE,
@@ -244,5 +260,36 @@ describe('createClientStatePersister', () => {
     persister.push(state(null, true));
     persister.flush();
     expect(writes).toEqual([state(null, true)]);
+  });
+});
+
+describe('rememberedAiProvider (Client State wins, Config seeds)', () => {
+  test('never picked: the startup setting (from config) is not copied into Client State', () => {
+    expect(rememberedAiProvider('zen', 'zen', null)).toBeNull();
+    expect(rememberedAiProvider('auto', 'auto', null)).toBeNull();
+  });
+
+  test('a pick in the dialog that differs from startup is remembered', () => {
+    expect(rememberedAiProvider('typesafe', 'auto', null)).toBe('typesafe');
+  });
+
+  test('once remembered, every later pick is remembered, even the config value', () => {
+    expect(rememberedAiProvider('auto', 'zen', 'zen')).toBe('auto');
+    expect(rememberedAiProvider('zen', 'zen', 'zen')).toBe('zen');
+  });
+
+  test('the persister writes a pick and skips a no-op', () => {
+    const writes: ClientState[] = [];
+    const persister = createClientStatePersister({
+      path: '/tmp/client.json',
+      initial: EMPTY_CLIENT_STATE,
+      write: (_path, s) => writes.push(s),
+    });
+    persister.push(state(null, null, null, null, rememberedAiProvider('auto', 'auto', null)));
+    persister.flush();
+    expect(writes).toEqual([]);
+    persister.push(state(null, null, null, null, rememberedAiProvider('typesafe', 'auto', null)));
+    persister.flush();
+    expect(writes).toEqual([state(null, null, null, null, 'typesafe')]);
   });
 });

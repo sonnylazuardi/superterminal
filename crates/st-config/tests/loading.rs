@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use st_config::{
-    BackspaceSends, Config, ConfigError, OptionAsAlt, Platform, Rgb, ShellConfig, TerminalConfig,
+    AiConfig, AiProvider, BackspaceSends, Config, ConfigError, OptionAsAlt, Platform, Rgb, ShellConfig, TerminalConfig,
     WindowBackground,
 };
 
@@ -392,4 +392,25 @@ fn floats_serialise_without_f32_widening_noise() {
     assert!(text.contains("line_height = 1.2"), "{text}");
     assert!(!text.contains("1.2000000"), "{text}");
     assert!(text.contains("size = 13.0"), "{text}");
+}
+
+#[test]
+fn ai_provider_defaults_to_auto_and_parses_each_value() {
+    let c = Config::default();
+    assert_eq!(c.ai.provider, AiProvider::Auto);
+    assert_eq!(c.ai.endpoint, None);
+    assert_eq!(c.ai.model, None);
+    for (text, want) in [
+        ("auto", AiProvider::Auto),
+        ("typesafe", AiProvider::Typesafe),
+        ("zen", AiProvider::Zen),
+    ] {
+        let c = Config::parse_str(&format!("[ai]\nprovider = \"{text}\"\n")).unwrap();
+        assert_eq!(c.ai.provider, want);
+    }
+    let c = Config::parse_str("[ai]\nendpoint = \"https://example.test/v1\"\nmodel = \"m\"\n").unwrap();
+    assert_eq!(c.ai.endpoint.as_deref(), Some("https://example.test/v1"));
+    assert_eq!(c.ai.model.as_deref(), Some("m"));
+    assert_eq!(AiConfig::TYPESAFE_MODEL, "jev-1.13.0");
+    assert!(Config::parse_str("[ai]\nprovider = \"openai\"\n").is_err());
 }

@@ -45,7 +45,7 @@ pub use crate::paths::{
     CONFIG_FILE_NAME, DIR_MODE, LOCK_FILE_NAME, SOCKET_FILE_NAME,
 };
 pub use crate::sections::{
-    AiConfig, BackspaceSends, FontConfig, Keybindings, OptionAsAlt, Padding, ResolvedShell,
+    AiConfig, AiProvider, BackspaceSends, FontConfig, Keybindings, OptionAsAlt, Padding, ResolvedShell,
     ServerConfig, ShellConfig, TerminalConfig, ThemeConfig, WindowBackground, WindowConfig,
 };
 

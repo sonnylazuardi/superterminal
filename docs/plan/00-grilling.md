@@ -241,5 +241,8 @@ Commands, Tabs and Sessions are rows of one list; `sessions` survives as a filte
 ### Q57. Where an AI provider key lives (extends Q34; adds a third store beside Config and Client State)
 Precedence: `[ai] api_key` in `config.toml`; else the key the user entered in the app's **AI Settings…** dialog, stored in `secrets.json` in the Client State directory (`%LOCALAPPDATA%\superterminal` on Windows, `~/Library/Application Support/superterminal` on macOS, `~/.local/state/superterminal` on Linux; 0600 on Unix); else `$SUPERTERMINAL_AI_API_KEY`; else OpenCode's own auth store (`~/.local/share/opencode/auth.json`, `opencode.key`). A typed‑in secret is neither Config (hand‑written, never written by the program) nor Client State (remembered without being declared), hence its own file. The `[ai]` table is parsed by both `st-config` (for `st config init/check`) and the client, and read only by the client. The key is never printed beyond its last four characters. **Adopted.**
 
+### Q58. A second Jev provider (extends Q57)
+TypeSafe's direct endpoint joins OpenCode Zen as a selectable provider: `[ai] provider = "auto" | "typesafe" | "zen"`, default `auto` (first key found decides; TypeSafe preferred). Keys are stored per provider; the dialog's choice is Client State. TypeSafe is pinned to `jev-1.13.0` because Zen's `jev-1.13` is unknown there and the thresholds were tuned on 1.13. Detail: [`09-typesafe-endpoint.md`](./09-typesafe-endpoint.md). **Adopted.**
+
 ## Shared understanding reached
 The decisions above (Q1–Q53) are frozen for planning. Downstream documents: `01-architecture.md`, `02-protocol.md`, `03-server.md`, `04-client-native.md`, `05-client-app.md`, `06-testing-perf.md`, `07-milestones.md`, `CONTEXT.md`, `docs/adr/*`, `HANDOVER.md`.

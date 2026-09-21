@@ -286,12 +286,24 @@ const SECTIONS: &[Section] = &[
             "`screen_context` below, which is off. Off entirely without a key.",
         ],
         &[
+            key(
+                "provider",
+                &[
+                    "Which provider ranks the palette: \"auto\", \"typesafe\" or \"zen\".",
+                    "\"auto\" picks TypeSafe when a TypeSafe key is found, else OpenCode Zen.",
+                    "TypeSafe keys (apikey_...) come from https://console.typesafe.ai/keys",
+                    "or $TYPESAFE_API_KEY; OpenCode Zen keys from OpenCode's own login.",
+                    "The AI Settings... dialog can override this for this machine.",
+                ],
+            ),
             opt_key(
                 "api_key",
                 &[
-                    "Provider key. Unset means, in order: the key stored from the app's",
-                    "AI Settings... dialog, $SUPERTERMINAL_AI_API_KEY, then OpenCode's own",
-                    "login (~/.local/share/opencode/auth.json).",
+                    "Key for the selected provider; with provider = \"auto\" an apikey_...",
+                    "key is TypeSafe's, anything else OpenCode Zen's. Unset means, in",
+                    "order: the key stored from the app's AI Settings... dialog, the",
+                    "environment ($TYPESAFE_API_KEY, $SUPERTERMINAL_AI_API_KEY), then",
+                    "OpenCode's own login (~/.local/share/opencode/auth.json).",
                 ],
                 "api_key = \"\"",
             ),
@@ -299,11 +311,23 @@ const SECTIONS: &[Section] = &[
                 "palette",
                 &["Rank palette rows with Jev when a key is found."],
             ),
-            key(
+            opt_key(
                 "endpoint",
-                &["Provider endpoint (TypeSafe System One shape). Default: OpenCode Zen."],
+                &[
+                    "Override the provider's endpoint (System One shape). Unset: the",
+                    "selected provider's own - https://api.typesafe.ai/v1/systemone",
+                    "(TypeSafe) or https://opencode.ai/zen/v1/systemone (OpenCode Zen).",
+                ],
+                "endpoint = \"https://api.typesafe.ai/v1/systemone\"",
             ),
-            key("model", &["Model id at that endpoint."]),
+            opt_key(
+                "model",
+                &[
+                    "Override the model id at that endpoint. Unset: the provider's own -",
+                    "jev-1.13.0 (TypeSafe) or jev-1.13 (OpenCode Zen).",
+                ],
+                "model = \"jev-1.13.0\"",
+            ),
             key(
                 "screen_context",
                 &[

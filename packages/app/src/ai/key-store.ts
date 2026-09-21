@@ -5,12 +5,18 @@
  * without being declared), so it gets its own file. User-only permissions on
  * Unix; on Windows the per-user profile ACL is the protection.
  *
+ * One key per provider (`{"ai":{"keys":{"typesafe","zen"}}}`), so a user can
+ * hold both and flip the provider setting without re-pasting. The legacy
+ * single-key shape is read as Zen's and rewritten on the next write.
+ *
  * The filesystem is injected so the tests never touch the real one.
  */
 
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { stateDir, type PathEnv } from '../server/paths.js';
+import type { ProviderId } from '../state/types.js';
+import { PROVIDER_ORDER } from './providers.js';
 
 export const SECRETS_FILENAME = 'secrets.json';
 
@@ -48,31 +54,70 @@ export function secretsPath(input: PathEnv = {}): string {
   return join(stateDir(input), SECRETS_FILENAME);
 }
 
-/** The key on disk, or null (missing, unreadable or malformed file). */
-export function readStoredKey(path: string, fs: SecretsFs = realSecretsFs): { key: string | null; warning?: string } {
-  if (!fs.exists(path)) return { key: null };
+export type StoredKeys = Partial<Record<ProviderId, string>>;
+
+/**
+ * Parses the file into per-provider keys. The pre-provider shape
+ * `{"ai":{"api_key"}}` was only ever used with Zen, so it reads as the zen
+ * key; a `keys.zen` entry wins over it if both somehow exist.
+ */
+function parseKeys(raw: unknown): StoredKeys {
+  const keys: StoredKeys = {};
+  const ai = (raw as { ai?: unknown } | null)?.ai;
+  if (typeof ai !== 'object' || ai === null) return keys;
+  const legacy = (ai as { api_key?: unknown }).api_key;
+  if (typeof legacy === 'string' && legacy.trim().length > 0) keys.zen = legacy.trim();
+  const map = (ai as { keys?: unknown }).keys;
+  if (typeof map === 'object' && map !== null) {
+    for (const id of PROVIDER_ORDER) {
+      const v = (map as Record<string, unknown>)[id];
+      if (typeof v === 'string' && v.trim().length > 0) keys[id] = v.trim();
+    }
+  }
+  return keys;
+}
+
+/** Every stored key (missing, unreadable or malformed file: none, maybe a warning). */
+export function readStoredKeys(path: string, fs: SecretsFs = realSecretsFs): { keys: StoredKeys; warning?: string } {
+  if (!fs.exists(path)) return { keys: {} };
   let text: string;
   try {
     text = fs.read(path);
   } catch (err) {
-    return { key: null, warning: `[superterminal] could not read ${path}: ${(err as Error).message}` };
+    return { keys: {}, warning: `[superterminal] could not read ${path}: ${(err as Error).message}` };
   }
   try {
-    const raw = JSON.parse(text) as unknown;
-    const key = (raw as { ai?: { api_key?: unknown } })?.ai?.api_key;
-    if (typeof key === 'string' && key.trim().length > 0) return { key: key.trim() };
-    return { key: null };
+    return { keys: parseKeys(JSON.parse(text) as unknown) };
   } catch {
-    return { key: null, warning: `[superterminal] ${path} is not valid JSON; ignoring it` };
+    return { keys: {}, warning: `[superterminal] ${path} is not valid JSON; ignoring it` };
   }
 }
 
-export function writeStoredKey(path: string, key: string, fs: SecretsFs = realSecretsFs): void {
-  fs.write(path, `${JSON.stringify({ ai: { api_key: key.trim() } }, null, 2)}\n`);
+/** Writes the new shape only; a legacy `api_key` is carried over as `keys.zen`. */
+function writeKeys(path: string, keys: StoredKeys, fs: SecretsFs): void {
+  const ordered: StoredKeys = {};
+  for (const id of PROVIDER_ORDER) {
+    const k = keys[id];
+    if (k) ordered[id] = k;
+  }
+  if (Object.keys(ordered).length === 0) {
+    fs.remove(path);
+    return;
+  }
+  fs.write(path, `${JSON.stringify({ ai: { keys: ordered } }, null, 2)}\n`);
 }
 
-export function deleteStoredKey(path: string, fs: SecretsFs = realSecretsFs): void {
-  fs.remove(path);
+/** Stores one provider's key, keeping the other's. */
+export function writeStoredKey(path: string, provider: ProviderId, key: string, fs: SecretsFs = realSecretsFs): void {
+  const { keys } = readStoredKeys(path, fs);
+  writeKeys(path, { ...keys, [provider]: key.trim() }, fs);
+}
+
+/** Forgets one provider's key; the file goes away when none remain. */
+export function deleteStoredKey(path: string, provider: ProviderId, fs: SecretsFs = realSecretsFs): void {
+  const { keys } = readStoredKeys(path, fs);
+  delete keys[provider];
+  writeKeys(path, keys, fs);
 }
 
 /** What the chrome may show of a key: its last four characters (08 Q15). */

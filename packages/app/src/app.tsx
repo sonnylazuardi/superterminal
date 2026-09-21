@@ -26,11 +26,12 @@ import { parseArgv, USAGE } from './cli/argv.js';
 import { buildWindowOptions } from './platform/window-options.js';
 import {
   createClientStatePersister,
+  rememberedAiProvider,
   type ClientState,
   type ClientStatePersister,
 } from './state/client-state.js';
 import { readWindowPlacement, type WindowPlacementSource } from './state/window-placement.js';
-import type { WorkspaceState } from './state/types.js';
+import type { ProviderSetting, WorkspaceState } from './state/types.js';
 import type { WorkspaceStore } from './state/workspace-store.js';
 import { App } from './ui/App.js';
 import type { AppServices } from './ui/context.js';
@@ -103,7 +104,12 @@ export function main(argvInput: string[] = Bun.argv.slice(2)): void {
     },
   });
   const persister = boot.clientStatePath
-    ? persistClientState(boot.store, boot.clientStatePath, boot.clientState)
+    ? persistClientState(
+        boot.store,
+        boot.clientStatePath,
+        boot.clientState,
+        boot.clientState.aiProvider ?? boot.config.ai.provider,
+      )
     : null;
   globalThis.__stRoot = { root, services, persister };
 
@@ -124,7 +130,13 @@ export function main(argvInput: string[] = Bun.argv.slice(2)): void {
 }
 
 /** What the store knows that is worth remembering (ADR 0008). */
-export function clientStateOf(state: WorkspaceState): ClientState {
+export function clientStateOf(
+  state: WorkspaceState,
+  ai: { atStartup: ProviderSetting; remembered: ProviderSetting | null } = {
+    atStartup: state.ui.ai.providerSetting,
+    remembered: null,
+  },
+): ClientState {
   const window = state.ui.window;
   return {
     // A zero size is "not measured yet"; the caller keeps the placement that
@@ -133,6 +145,8 @@ export function clientStateOf(state: WorkspaceState): ClientState {
     verticalTabs: state.ui.verticalTabs,
     sidebarWidth: state.ui.sidebarWidth,
     fontZoom: state.ui.fontZoom,
+    // Only a pick in AI Settings is remembered; otherwise config decides.
+    aiProvider: rememberedAiProvider(state.ui.ai.providerSetting, ai.atStartup, ai.remembered),
   };
 }
 
@@ -175,6 +189,7 @@ function persistClientState(
   store: WorkspaceStore,
   path: string,
   initial: ClientState,
+  aiProviderAtStartup: ProviderSetting,
 ): ClientStatePersister {
   const persister = createClientStatePersister({
     path,
@@ -184,7 +199,10 @@ function persistClientState(
     },
   });
   const push = () => {
-    const next = clientStateOf(store.getState());
+    const next = clientStateOf(store.getState(), {
+      atStartup: aiProviderAtStartup,
+      remembered: initial.aiProvider,
+    });
     // A window that has not been measured yet must not erase the last size.
     persister.push(next.window ? next : { ...next, window: initial.window });
   };

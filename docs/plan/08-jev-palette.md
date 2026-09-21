@@ -5,6 +5,8 @@ the self‑interview format of [`00-grilling.md`](./00-grilling.md): each questi
 gets a recommended answer and is **adopted** so the task list at the end can rely
 on it. Facts were looked up in the repo and measured live; the decisions are ours.
 Decisions that change earlier ones are mirrored as Q54–Q57 in `00-grilling.md`.
+**Superseded in part by [`09-typesafe-endpoint.md`](./09-typesafe-endpoint.md)**:
+Zen is no longer the only provider (Q10, Q15, Q16, Q17 read with that in mind).
 
 ## 0. What we are building (30 seconds)
 
