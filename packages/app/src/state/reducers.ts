@@ -34,6 +34,8 @@ import type {
 
 export const initialAiStatus: AiStatus = {
   enabled: true,
+  provider: null,
+  providerSetting: 'auto',
   source: 'none',
   last4: null,
   endpoint: '',
@@ -82,6 +84,8 @@ export const initialWorkspaceState: WorkspaceState = {
 function sameAiStatus(a: AiStatus, b: AiStatus): boolean {
   return (
     a.enabled === b.enabled &&
+    a.provider === b.provider &&
+    a.providerSetting === b.providerSetting &&
     a.source === b.source &&
     a.last4 === b.last4 &&
     a.endpoint === b.endpoint &&

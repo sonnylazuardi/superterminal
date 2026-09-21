@@ -67,6 +67,12 @@ export type PaletteMode = 'all' | 'sessions';
 /** Where the AI provider key came from, in precedence order (08 §D Q15). */
 export type AiKeySource = 'config' | 'app' | 'env' | 'opencode' | 'none';
 
+/** A System One provider the client can call (09). */
+export type ProviderId = 'typesafe' | 'zen';
+
+/** What the user asked for: a provider, or `auto` (first key found wins, 09). */
+export type ProviderSetting = 'auto' | ProviderId;
+
 /**
  * What the chrome may know about the AI (Jev) integration. Never the key
  * itself: only its source and its last four characters.
@@ -74,6 +80,10 @@ export type AiKeySource = 'config' | 'app' | 'env' | 'opencode' | 'none';
 export interface AiStatus {
   /** `[ai] palette` from config; false hides every AI affordance. */
   enabled: boolean;
+  /** The provider actually in use, or null when no key was found. */
+  provider: ProviderId | null;
+  /** The user's choice: config `[ai] provider`, overridden by the dialog (Client State). */
+  providerSetting: ProviderSetting;
   source: AiKeySource;
   last4: string | null;
   endpoint: string;
