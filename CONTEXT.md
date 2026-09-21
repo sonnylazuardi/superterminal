@@ -112,6 +112,10 @@ _Avoid_: modal (there is no modal state; Esc always dismisses), popup, overlay (
 A floating list of Commands opened at the pointer by a right‑click (e.g. on a Tab). Like a Dialog it takes the keyboard while open — arrows move, Enter runs, Esc or a click elsewhere closes — but it opens where it was invoked, not at the top centre.
 _Avoid_: context menu (acceptable in UI copy only), popup, dropdown
 
+**Provider**:
+The service that answers the palette's ranking questions with the Jev model: TypeSafe directly, or OpenCode Zen. Chosen as `auto`, `typesafe` or `zen`; `auto` uses the first key found. Each Provider has its own key.
+_Avoid_: backend, model (Jev is the model; a Provider serves it), API
+
 **Command**:
 A named, user‑invocable action with an optional shortcut, shown in the Command Palette (e.g. "New Tab").
 _Avoid_: action, binding (the shortcut is the binding; the Command is what it runs)

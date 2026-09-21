@@ -4,50 +4,125 @@
 
 A GPU‑rendered, native multiplexer terminal for Windows, Linux and Mac. Rust server (`superterminald`) owns the terminals; a Bun 1.4.0 + React client renders them through [gpuix](https://github.com/remorses/gpuix) (React bindings for Zed's GPUI) with a native Rust `<terminal-grid>` element.
 
-**Status: implemented and running.** The daemon owns live PTYs and streams
-Snapshots/Deltas; the client renders them in a native window with a vertical
-tab sidebar, command palette, and reconnect. Run it via [`docs/DEV.md`](./docs/DEV.md)
-(Linux/WSL) or [`docs/WINDOWS.md`](./docs/WINDOWS.md) (native Windows client
-against a WSL server, exe + MSI included). Planning history is preserved below.
+**Status: implemented and in daily use.** Terminals live in a background
+server, so closing the window never kills a program and reopening it is
+instant. Windows (native client against a WSL server) and macOS (Apple silicon)
+ship as installers; Linux and WSLg run from source.
 
-## What works
+## Download
+
+Grab the latest build from [Releases](https://github.com/sonnylazuardi/superterminal/releases):
+
+- **Windows**: `Superterminal-<version>.msi`, a per-user install with no admin
+  prompt. The daemon runs in WSL2; setup is in
+  [`docs/WINDOWS.md`](./docs/WINDOWS.md#install-from-a-release).
+- **macOS**: `superterminal-<version>-arm64.dmg`. It is ad-hoc signed, not
+  notarized, so open it the first time with right-click → Open.
+
+## Features
+
+- **Terminals that outlive the window.** A per-user server owns every shell.
+  Quit the app, reopen it, and every tab, split and scroll position is back.
+- **Sessions, tabs and split panes**, in a sidebar or a top strip. Right-click
+  a tab for Split Right, Split Down and Close; drag dividers to resize.
+- **GPU rendering** through Zed's GPUI, with block-art and box-drawing
+  characters drawn from the cell itself, so logos tile without seams.
+- **One palette for everything** (⌘K on macOS, Ctrl+K on Windows and Linux).
+  Commands, tabs and sessions share one list. Type part of a tab's title, its
+  directory, or **anything visible on its screen** to jump to it. Screen search
+  runs locally and needs no key: the server returns the visible rows of every
+  tab, including ones not on screen, and the matching line shows beside the row.
+- **Plain-words queries with Jev** (optional, below).
+- Plain-text `config.toml` for font, theme, shell and keybindings;
+  `st config init` writes a commented copy of every default.
+
+### Shortcuts
+
+| Action | macOS | Windows / Linux |
+|---|---|---|
+| Command palette | ⌘K or ⌘⇧P | Ctrl+K or Ctrl+Shift+P |
+| New tab / close tab | ⌘T / ⌘W | Ctrl+Shift+T / Ctrl+Shift+W |
+| Split right / split down | ⌘D / ⌘⇧D | Ctrl+Shift+D / Alt+Shift+D |
+| Go to tab 1–9 | ⌘1…⌘9 | Alt+1…Alt+9 |
+| Switch session | ⌘⇧S | Ctrl+Shift+S |
+
+Ctrl+K takes readline's kill-to-end-of-line on Windows and Linux. To give it
+back, add `"palette.commands" = "ctrl+shift+p"` under `[keybindings]`.
+
+## Jev: plain-words palette queries
+
+With a key, the palette also understands what you *mean*. "kill this tab",
+"split below", "make the text bigger", "the frontend one" and "the busy one"
+land on the right row even when no title contains those words.
+
+The ranking comes from [Jev](https://docs.typesafe.ai/introduction),
+TypeSafe's System One model. Jev does not generate text. The palette sends the
+query and the list of rows as one typed question, and Jev returns a
+calibrated probability for each row. Local matching still answers every
+keystroke instantly. A settled query is ranked about a quarter of a second
+later, and a confident pick moves to the top, marked ✦. Enter always acts on
+the row under the cursor, so a slow or missing answer never gets in the way.
+
+**Providers.** Jev is available directly from TypeSafe or through OpenCode Zen:
+
+| | TypeSafe (direct) | OpenCode Zen |
+|---|---|---|
+| Key | [console.typesafe.ai/keys](https://console.typesafe.ai/keys), starts with `apikey_` | your [OpenCode](https://opencode.ai/docs/zen/) login is picked up automatically |
+| Model | `jev-1.13.0` | `jev-1.13` |
+| Median latency on the palette test set | 290 ms | 654 ms |
+
+**Setup.** Open the palette, run **AI Settings…**, paste a key and press
+Enter. The dialog saves it, runs a connection test and reports the provider,
+the model that answered and the latency. The provider row cycles
+Auto → TypeSafe → OpenCode Zen. Auto, the default, uses TypeSafe when it
+finds a TypeSafe key and otherwise falls back to Zen.
+
+The same settings in `config.toml`:
+
+```toml
+[ai]
+provider = "auto"      # or "typesafe" / "zen"
+# api_key = "apikey_…" # or set TYPESAFE_API_KEY
+```
+
+A key is looked up in this order: `api_key` in `config.toml`, the key saved by
+the dialog, the `TYPESAFE_API_KEY` or `SUPERTERMINAL_AI_API_KEY` environment
+variable, then OpenCode's own login. The dialog stores one key per provider in
+`secrets.json` next to the window state and never shows more than its last
+four characters.
+
+**What leaves your machine.** Without a key, nothing. With one, a palette
+query sends the query, command titles, tab titles, working directories and
+session names to the provider you picked. Screen text is **not** sent unless
+you turn on `[ai] screen_context`, which is off by default. Even then only a
+short excerpt of each tab goes out, with bearer tokens, API keys, private keys
+and `password=`/`token=` values masked first.
+
+Design notes: [`docs/plan/08-jev-palette.md`](./docs/plan/08-jev-palette.md)
+(the palette) and [`docs/plan/09-typesafe-endpoint.md`](./docs/plan/09-typesafe-endpoint.md)
+(providers). `bun scripts/jev-palette-probe.ts --provider typesafe|zen` re-runs
+the 15 test queries against a live endpoint.
+
+## Architecture
 
 - **Server** (`superterminald`): per-Surface PTYs over `portable-pty`,
   `alacritty_terminal` VT engine behind the `VtEngine` trait, Snapshot/Delta
   fan-out with ack window and slow-client Snapshot, Workspace actor
-  (Sessions → Tabs → Surfaces), `workspace.json` persistence with cwd
+  (Sessions → Tabs → Panes → Surfaces), `workspace.json` persistence with cwd
   tracking, idle exit, `st` CLI (`status`, `ls`, `probe`, `kill-server`,
   `dump-data`, `config`).
-- **Protocol** (`st-proto` v1.0): Control Plane (NDJSON) + Data Plane
+- **Protocol** (`st-proto`, version 1.1): Control Plane (NDJSON) + Data Plane
   (`u32 len | u16 type | postcard`) on one sniffed socket, plus **loopback
-  TCP** (`--tcp`, `tcp://`) for the Windows/WSL split.
-- **Client**: native `<terminal-grid>` (run-shaping cache, selection,
-  mouse reporting, scrollbar + lazy history, resize, IME/focus handling),
-  React chrome (sidebar/strip toggle, palette, toasts, banners, keybindings),
-  server auto-spawn and reconnect.
-- **Palette** (⌘K on macOS, Ctrl+K on Windows/Linux): commands, tabs and
-  sessions in one list. Type part of a tab's title, directory, session — or of
-  anything **visible on that tab's screen** — to jump to it. Searching screen
-  text is local and needs no key: the Server answers with the visible rows of
-  every tab in the session and the match runs on your machine, with the
-  matching line shown as evidence. With a Jev key (palette → **AI Settings…**,
-  or `[ai]` in `config.toml`) plain-words queries such as "kill this tab",
-  "split below" or "the frontend one" are also ranked by
-  [Jev](https://docs.typesafe.ai/introduction), TypeSafe's decision model —
-  either directly from TypeSafe (a key from
-  [console.typesafe.ai](https://console.typesafe.ai/keys), about twice as
-  fast) or through [OpenCode Zen](https://opencode.ai/docs/zen/). With
-  `provider = "auto"` a TypeSafe key wins and an OpenCode login is the
-  fallback. What leaves
-  the machine then is the query, command titles, tab titles, working
-  directories and session names. Screen text is sent **only** if you turn on
-  `[ai] screen_context` (off by default), and is redacted for secrets and cut
-  to a short excerpt first. Without a key the palette is fully local. Plan and
-  decisions: [`docs/plan/08-jev-palette.md`](./docs/plan/08-jev-palette.md).
+  TCP** (`--tcp`, `tcp://`) for the Windows/WSL split. 1.1 added split Panes
+  and `surface.screen_text`.
+- **Client**: Bun + React chrome on [gpuix](https://github.com/remorses/gpuix)
+  with a native Rust `<terminal-grid>` element (run-shaping cache, selection,
+  mouse reporting, scrollbar + lazy history, resize, IME/focus handling).
+  Cell data never passes through JavaScript. The AI ranking lives in the
+  client (`packages/app/src/ai/`); the server makes no network calls.
 - **Platforms**: Linux/WSLg and native Windows (MSVC build, Direct3D,
-  per-user MSI, no-console exe) live against a WSL daemon; macOS runs on
-  Apple silicon (Metal, CoreText) and packages as an ad-hoc signed `.app` +
-  `.dmg` (`scripts/package-macos.sh` / `just dmg`).
+  per-user MSI, no-console exe) against a WSL daemon; macOS on Apple silicon
+  (Metal, CoreText), packaged as an ad-hoc signed `.app` + `.dmg`.
 
 ## Run and build
 
@@ -147,9 +222,12 @@ From [`docs/plan/07-milestones.md`](./docs/plan/07-milestones.md):
 - **[+] Beyond the plan** — loopback TCP transport, Windows-client/WSL-server
   split, gpuix 0.7.0 bump, `fixing-gpuix-layout` skill, remembered window
   size / tab layout / sidebar width (Client State, ADR 0008), **split Panes**
-  with a right-click tab Menu and draggable dividers (ADR 0009, protocol 1.1).
+  with a right-click tab Menu and draggable dividers (ADR 0009, protocol 1.1),
+  the **unified palette** with screen-text search, and **Jev ranking** through
+  TypeSafe or OpenCode Zen (plans 08 and 09).
 - **[ ] Out of scope (unchanged)** — remote SSH, web client, ligatures,
-  graphics protocols, scrollback search, signing/notarization.
+  graphics protocols, scrollback search (the palette searches the visible
+  screen only), signing/notarization.
 
 ## Documents
 
@@ -157,7 +235,10 @@ From [`docs/plan/07-milestones.md`](./docs/plan/07-milestones.md):
 |---|---|
 | [`HANDOVER.md`](./HANDOVER.md) | Entry point for an AI agent (or human) picking up implementation |
 | [`CONTEXT.md`](./CONTEXT.md) | Ubiquitous language / glossary — use these words everywhere |
-| [`docs/plan/00-grilling.md`](./docs/plan/00-grilling.md) | The 36 decisions, with reasoning, that everything else depends on |
+| [`docs/DEV.md`](./docs/DEV.md) | Building and running on Linux/WSL and macOS, debugging, bring-up notes |
+| [`docs/WINDOWS.md`](./docs/WINDOWS.md) | Windows client against a WSL server: install, build, packaging |
+| [`docs/config-example.toml`](./docs/config-example.toml) | Every `config.toml` key with its default, generated from the schema |
+| [`docs/plan/00-grilling.md`](./docs/plan/00-grilling.md) | The 58 decisions, with reasoning, that everything else depends on |
 | [`docs/plan/01-architecture.md`](./docs/plan/01-architecture.md) | Processes, threads, connections, crate layout, failure modes |
 | [`docs/plan/02-protocol.md`](./docs/plan/02-protocol.md) | Wire protocol: Control Plane (JSON) and Data Plane (binary) |
 | [`docs/plan/03-server.md`](./docs/plan/03-server.md) | `superterminald`: workspace actor, VT engine, PTYs, persistence |
@@ -165,6 +246,8 @@ From [`docs/plan/07-milestones.md`](./docs/plan/07-milestones.md):
 | [`docs/plan/05-client-app.md`](./docs/plan/05-client-app.md) | Bun/React chrome: tabs, sessions, palette, control‑plane client, packaging |
 | [`docs/plan/06-testing-perf-ci.md`](./docs/plan/06-testing-perf-ci.md) | Test pyramid, VT conformance, perf budgets, CI |
 | [`docs/plan/07-milestones.md`](./docs/plan/07-milestones.md) | M0–M6 work breakdown with task ids, estimates, acceptance tests |
+| [`docs/plan/08-jev-palette.md`](./docs/plan/08-jev-palette.md) | The unified palette, screen-text search and Jev ranking |
+| [`docs/plan/09-typesafe-endpoint.md`](./docs/plan/09-typesafe-endpoint.md) | TypeSafe's direct endpoint as a second Jev provider |
 | [`docs/adr/`](./docs/adr/) | Architecture decision records (the hard‑to‑reverse choices) |
 
 ## License

@@ -8,6 +8,36 @@ networking; no `.wslconfig` change is needed. (If it ever stops working,
 `networkingMode=mirrored` under `[wsl2]` in `%USERPROFILE%\.wslconfig`
 followed by `wsl --shutdown` is the fallback.)
 
+## Install from a release
+
+The MSI carries the Windows client only. The daemon runs inside WSL2 and is
+built from source there once.
+
+1. **In WSL**, build the daemon (Rust and the Linux prerequisites from
+   [`DEV.md`](./DEV.md) §1):
+   ```bash
+   git clone https://github.com/sonnylazuardi/superterminal && cd superterminal
+   cargo build --release -p st-server -p st-cli
+   ```
+2. **On Windows**, run `Superterminal-<version>.msi` from
+   [Releases](https://github.com/sonnylazuardi/superterminal/releases). It
+   installs per-user to `%LOCALAPPDATA%\Superterminal`, needs no admin, and
+   upgrades an older version in place.
+3. Tell the client where the daemon lives, once:
+   ```bat
+   setx SUPERTERMINAL_SERVER /home/<you>/superterminal/target/release/superterminald
+   ```
+4. Launch **Superterminal** from the Start Menu. It boots WSL and starts the
+   daemon itself when nothing is listening yet (see [Run](#run)).
+
+After pulling a newer version, rebuild the daemon and restart it
+(`st --tcp 127.0.0.1:7171 kill-server`, then relaunch the app). A restart
+re-seeds your shells, so finish running work first. Features that need the
+newer daemon, such as screen search in the palette, quietly do nothing until
+then.
+
+The build is unsigned, so SmartScreen asks for confirmation on first launch.
+
 ## Prerequisites (Windows)
 
 - Windows 11, WSL2 with any distro as the home side.
@@ -170,6 +200,13 @@ admin). The full chain, all on Windows:
   Pane per Tab. Right-click a tab row for the Menu (Split Right / Split
   Down / Close Pane / Close Tab); shortcuts on Windows are Ctrl+Shift+D,
   Alt+Shift+D, Alt+Shift+W, Alt+] / Alt+[.
+
+- AI ranking in the palette (Jev, optional): the key saved from
+  **AI Settings…** lives in `%LOCALAPPDATA%\superterminal\secrets.json`, one
+  per provider, and the provider picked in that dialog in `client.json`.
+  Most Windows machines have no OpenCode login, so the dialog is the usual
+  way in; a TypeSafe key from console.typesafe.ai works directly. The calls
+  go out from the Windows client, not from WSL.
 
 - The client remembers its Window Placement and tab layout (Client State,
   ADR 0008) in `%LOCALAPPDATA%\superterminal\client.json`; delete the file
