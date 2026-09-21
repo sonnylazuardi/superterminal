@@ -1,6 +1,7 @@
 /**
  * Client State (CONTEXT.md, ADR 0008): what this Client on this machine
- * remembers from its last run — the Window Placement and the Tab Layout.
+ * remembers from its last run — the Window Placement, the Tab Layout, the
+ * sidebar width, the font zoom and the AI provider picked in AI Settings.
  *
  * It is a separate file from `config.toml` on purpose: Config is the user's
  * hand-written declaration and the program never rewrites it, while this
@@ -17,6 +18,7 @@ import { dirname, join } from 'node:path';
 import { z } from 'zod';
 import { stateDir, type PathEnv } from '../server/paths.js';
 import { SIDEBAR_WIDTH_MAX, SIDEBAR_WIDTH_MIN } from './layout.js';
+import type { ProviderSetting } from './types.js';
 
 export const CLIENT_STATE_FILENAME = 'client.json';
 export const CLIENT_STATE_VERSION = 1;
@@ -58,10 +60,12 @@ const ClientStateFileSchema = z.object({
   verticalTabs: z.unknown().optional(),
   sidebarWidth: z.unknown().optional(),
   fontZoom: z.unknown().optional(),
+  aiProvider: z.unknown().optional(),
 });
 
 const SidebarWidthSchema = z.number().finite().min(SIDEBAR_WIDTH_MIN).max(SIDEBAR_WIDTH_MAX);
 const FontZoomSchema = z.number().finite();
+const AiProviderSchema = z.enum(['auto', 'typesafe', 'zen']);
 
 export interface WindowSize {
   width: number;
@@ -106,6 +110,11 @@ export interface ClientState {
   sidebarWidth: number | null;
   /** ⌘+ / ⌘− font zoom, in points added to the configured size. */
   fontZoom: number | null;
+  /**
+   * The provider picked in the AI Settings dialog. `null`: never picked on
+   * this machine, so `[ai] provider` in config.toml decides.
+   */
+  aiProvider: ProviderSetting | null;
 }
 
 export const EMPTY_CLIENT_STATE: ClientState = {
@@ -113,6 +122,7 @@ export const EMPTY_CLIENT_STATE: ClientState = {
   verticalTabs: null,
   sidebarWidth: null,
   fontZoom: null,
+  aiProvider: null,
 };
 
 /** `$XDG_STATE_HOME/superterminal/client.json` (or the platform equivalent). */
@@ -215,7 +225,14 @@ export function parseClientState(text: string): { state: ClientState; warnings: 
     else warnings.push('[superterminal] client state: remembered font zoom ignored');
   }
 
-  return { state: { window, verticalTabs, sidebarWidth, fontZoom }, warnings };
+  let aiProvider: ProviderSetting | null = null;
+  if (parsed.data.aiProvider !== undefined) {
+    const provider = AiProviderSchema.safeParse(parsed.data.aiProvider);
+    if (provider.success) aiProvider = provider.data;
+    else warnings.push('[superterminal] client state: remembered AI provider ignored');
+  }
+
+  return { state: { window, verticalTabs, sidebarWidth, fontZoom, aiProvider }, warnings };
 }
 
 export interface LoadClientStateOptions extends PathEnv {
@@ -270,12 +287,14 @@ export function serializeClientState(state: ClientState): string {
     verticalTabs?: boolean;
     sidebarWidth?: number;
     fontZoom?: number;
+    aiProvider?: ProviderSetting;
   } = { version: CLIENT_STATE_VERSION };
   if (state.window) file.window = serializeWindow(state.window);
   if (state.verticalTabs !== null) file.verticalTabs = state.verticalTabs;
   if (state.sidebarWidth !== null) file.sidebarWidth = state.sidebarWidth;
   // Zero is the default; not writing it keeps a never-zoomed file unchanged.
   if (state.fontZoom !== null && state.fontZoom !== 0) file.fontZoom = state.fontZoom;
+  if (state.aiProvider !== null) file.aiProvider = state.aiProvider;
   return `${JSON.stringify(file, null, 2)}\n`;
 }
 
@@ -329,8 +348,30 @@ export function sameClientState(a: ClientState, b: ClientState): boolean {
     a.verticalTabs === b.verticalTabs &&
     a.sidebarWidth === b.sidebarWidth &&
     (a.fontZoom ?? 0) === (b.fontZoom ?? 0) &&
+    a.aiProvider === b.aiProvider &&
     sameWindowPlacement(a.window, b.window)
   );
+}
+
+/**
+ * What to remember about the AI provider, given the live `ui.ai.providerSetting`.
+ *
+ * The store always holds *some* setting — config's `[ai] provider` when
+ * nothing was picked — so mirroring it blindly would copy Config into Client
+ * State and freeze it there (a later edit of config.toml would then be
+ * ignored). Instead: a setting that differs from the one start-up resolved is
+ * a pick in the AI Settings dialog and is remembered; one equal to it stays
+ * whatever was remembered before (`null` when never picked, so Config keeps
+ * deciding). Once something is remembered, every later pick is remembered,
+ * including going back to what config.toml says.
+ */
+export function rememberedAiProvider(
+  current: ProviderSetting,
+  atStartup: ProviderSetting,
+  remembered: ProviderSetting | null,
+): ProviderSetting | null {
+  if (remembered !== null) return current;
+  return current === atStartup ? null : current;
 }
 
 /**

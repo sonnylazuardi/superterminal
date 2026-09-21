@@ -30,10 +30,15 @@ against a WSL server, exe + MSI included). Planning history is preserved below.
   anything **visible on that tab's screen** — to jump to it. Searching screen
   text is local and needs no key: the Server answers with the visible rows of
   every tab in the session and the match runs on your machine, with the
-  matching line shown as evidence. With an OpenCode Zen key (palette →
-  **AI Settings…**, or `[ai]` in `config.toml`) plain-words queries such as
-  "kill this tab", "split below" or "the frontend one" are also ranked by
-  [Jev](https://opencode.ai/docs/zen/), TypeSafe's decision model. What leaves
+  matching line shown as evidence. With a Jev key (palette → **AI Settings…**,
+  or `[ai]` in `config.toml`) plain-words queries such as "kill this tab",
+  "split below" or "the frontend one" are also ranked by
+  [Jev](https://docs.typesafe.ai/introduction), TypeSafe's decision model —
+  either directly from TypeSafe (a key from
+  [console.typesafe.ai](https://console.typesafe.ai/keys), about twice as
+  fast) or through [OpenCode Zen](https://opencode.ai/docs/zen/). With
+  `provider = "auto"` a TypeSafe key wins and an OpenCode login is the
+  fallback. What leaves
   the machine then is the query, command titles, tab titles, working
   directories and session names. Screen text is sent **only** if you turn on
   `[ai] screen_context` (off by default), and is redacted for secrets and cut

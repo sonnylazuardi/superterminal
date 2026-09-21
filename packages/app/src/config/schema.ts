@@ -81,12 +81,24 @@ export const KeybindingsSchema = z.record(z.string(), z.string()).default({});
  */
 export const AiSchema = z
   .object({
-    /** Provider key. Unset: the app-stored key, then the env, then OpenCode's login. */
+    /**
+     * Which Jev provider to call. `auto`: TypeSafe when a TypeSafe key is
+     * found (an `apikey_…` key or `$TYPESAFE_API_KEY`), else OpenCode Zen.
+     * The AI Settings dialog can override it on this machine (Client State).
+     */
+    provider: z.enum(['auto', 'typesafe', 'zen']).default('auto'),
+    /**
+     * Key for the selected provider; with `provider = auto` an `apikey_…` key
+     * is TypeSafe's, anything else OpenCode Zen's. Unset: the app-stored key,
+     * then the env, then OpenCode's login.
+     */
     apiKey: z.string().optional(),
     /** Rank palette rows with Jev when a key is found. */
     palette: z.boolean().default(true),
-    endpoint: z.string().url().default('https://opencode.ai/zen/v1/systemone'),
-    model: z.string().min(1).default('jev-1.13'),
+    /** Override of the provider's endpoint; unset, the provider preset's. */
+    endpoint: z.string().url().optional(),
+    /** Override of the provider's model id; unset, the provider preset's. */
+    model: z.string().min(1).optional(),
     /**
      * Send the visible screen text of your tabs with the palette query, so
      * they can be found and described by what they show. Off by default:

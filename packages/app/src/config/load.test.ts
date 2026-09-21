@@ -29,10 +29,10 @@ describe('defaults', () => {
     expect(DEFAULT_CONFIG.terminal.boldIsBright).toBe(false);
     expect(DEFAULT_CONFIG.theme).toEqual({});
     expect(DEFAULT_CONFIG.keybindings).toEqual({});
+    // No endpoint/model: the provider preset supplies them (ai/providers.ts).
     expect(DEFAULT_CONFIG.ai).toEqual({
+      provider: 'auto',
       palette: true,
-      endpoint: 'https://opencode.ai/zen/v1/systemone',
-      model: 'jev-1.13',
       screenContext: false,
     });
   });
@@ -96,10 +96,9 @@ ansi0 = "#000000"
     );
     expect(warnings).toEqual([]);
     expect(config.ai).toEqual({
+      provider: 'auto',
       apiKey: 'sk-1234567890',
       palette: false,
-      endpoint: 'https://opencode.ai/zen/v1/systemone',
-      model: 'jev-1.13',
       screenContext: true,
     });
     expect(parseConfigText('[ai]\napiKey = "sk-1234567890"\n').config.ai.apiKey).toBe('sk-1234567890');
@@ -107,6 +106,31 @@ ansi0 = "#000000"
     expect(parseConfigText('[ai]\npalette = true\n').config.ai.screenContext).toBe(false);
     expect(parseConfigText('[ai]\nscreenContext = true\n').config.ai.screenContext).toBe(true);
     expect(parseConfigText('[ai]\nendpoint = "not a url"\n').warnings.some((w) => w.includes('ai.endpoint'))).toBe(true);
+  });
+
+  test('[ai] provider parses; endpoint and model are optional overrides', () => {
+    for (const provider of ['auto', 'typesafe', 'zen'] as const) {
+      const { config, warnings } = parseConfigText(`[ai]\nprovider = "${provider}"\n`);
+      expect(warnings).toEqual([]);
+      expect(config.ai.provider).toBe(provider);
+      expect(config.ai.endpoint).toBeUndefined();
+      expect(config.ai.model).toBeUndefined();
+    }
+    const override = parseConfigText(
+      '[ai]\nprovider = "typesafe"\nendpoint = "https://example.test/v1/systemone"\nmodel = "jev-9"\n',
+    );
+    expect(override.warnings).toEqual([]);
+    expect(override.config.ai).toMatchObject({
+      provider: 'typesafe',
+      endpoint: 'https://example.test/v1/systemone',
+      model: 'jev-9',
+    });
+  });
+
+  test('[ai] an unknown provider warns and the table falls back to auto', () => {
+    const { config, warnings } = parseConfigText('[ai]\nprovider = "openai"\npalette = false\n');
+    expect(warnings.some((w) => w.includes('invalid config at ai.provider'))).toBe(true);
+    expect(config.ai.provider).toBe('auto');
   });
 
   test('camelCase spellings are accepted as well as snake_case', () => {

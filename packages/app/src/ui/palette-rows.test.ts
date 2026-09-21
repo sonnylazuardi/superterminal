@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import type { WorkspaceSnapshot } from '@superterminal/protocol-ts';
 import { buildRegistry } from '../commands/registry.js';
 import { createWorkspaceStore } from '../state/workspace-store.js';
-import { aiStatusLine } from './AiSettings.js';
+import { aiStatusLine, keyPlaceholder, nextProviderSetting, privacyLine, providerSettingLabel } from './AiSettings.js';
 import { initialAiStatus } from '../state/reducers.js';
 import { buildRows, tabLabel } from './palette-rows.js';
 
@@ -78,13 +78,55 @@ describe('buildRows (08 Q1/Q2)', () => {
 });
 
 describe('aiStatusLine', () => {
-  test('one line per state, key shown as its tail only', () => {
-    expect(aiStatusLine(initialAiStatus)).toContain('no key found');
-    expect(aiStatusLine({ ...initialAiStatus, status: 'ready', source: 'app', last4: 'cdef', lastLatencyMs: 612 })).toBe(
-      'AI ranking: on · key from this app · key …cdef · last call 612 ms',
+  const typesafe = { ...initialAiStatus, provider: 'typesafe' as const };
+  const zen = { ...initialAiStatus, provider: 'zen' as const };
+
+  test('one line per state, provider named, key shown as its tail only', () => {
+    expect(aiStatusLine(initialAiStatus)).toBe('AI ranking: off · no key found');
+    expect(aiStatusLine({ ...typesafe, status: 'ready', source: 'app', last4: '3a2f', lastLatencyMs: 290 })).toBe(
+      'AI ranking: on · TypeSafe · key from this app · key …3a2f · last call 290 ms',
+    );
+    expect(aiStatusLine({ ...zen, status: 'ready', source: 'opencode', last4: 'cdef', lastLatencyMs: 612 })).toBe(
+      'AI ranking: on · OpenCode Zen · key from OpenCode login · key …cdef · last call 612 ms',
+    );
+    expect(aiStatusLine({ ...typesafe, status: 'ready', source: 'env', last4: '9999', lastLatencyMs: null })).toBe(
+      'AI ranking: on · TypeSafe · key from environment · key …9999',
+    );
+    expect(aiStatusLine({ ...typesafe, status: 'disabled', lastError: 'Invalid API key' })).toBe(
+      'AI ranking: disabled this session · TypeSafe · Invalid API key',
     );
     expect(aiStatusLine({ ...initialAiStatus, status: 'disabled', lastError: 'Model x is not supported' })).toContain('disabled');
-    expect(aiStatusLine({ ...initialAiStatus, enabled: false })).toContain('palette = false');
+    expect(aiStatusLine({ ...typesafe, enabled: false })).toContain('palette = false');
+  });
+
+  test('off under an explicit provider names the key that is missing', () => {
+    expect(aiStatusLine({ ...initialAiStatus, providerSetting: 'typesafe' })).toBe('AI ranking: off · no TypeSafe key found');
+    expect(aiStatusLine({ ...initialAiStatus, providerSetting: 'zen' })).toBe('AI ranking: off · no OpenCode Zen key found');
+  });
+
+  test('privacyLine names the provider it sends to', () => {
+    expect(privacyLine(typesafe)).toBe(
+      'Typing in the palette sends the query, command titles, tab titles, working directories and session names to TypeSafe. Never screen contents.',
+    );
+    expect(privacyLine({ ...zen, screenContext: true })).toContain('session names to OpenCode Zen. It also sends the last few visible lines');
+    expect(privacyLine(initialAiStatus)).toContain('to the provider.');
+    expect(privacyLine({ ...initialAiStatus, providerSetting: 'zen' })).toContain('to OpenCode Zen.');
+  });
+
+  test('the provider row cycles Auto → TypeSafe → OpenCode Zen and shows what Auto resolved to', () => {
+    expect(nextProviderSetting('auto')).toBe('typesafe');
+    expect(nextProviderSetting('typesafe')).toBe('zen');
+    expect(nextProviderSetting('zen')).toBe('auto');
+    expect(providerSettingLabel('auto', 'typesafe')).toBe('Auto · using TypeSafe');
+    expect(providerSettingLabel('auto', 'zen')).toBe('Auto · using OpenCode Zen');
+    expect(providerSettingLabel('auto', null)).toBe('Auto · no key found');
+    expect(providerSettingLabel('zen', null)).toBe('OpenCode Zen');
+  });
+
+  test('the key placeholder names the provider the key is stored for', () => {
+    expect(keyPlaceholder('typesafe')).toBe('Paste a TypeSafe API key (console.typesafe.ai/keys)');
+    expect(keyPlaceholder('zen')).toBe('Paste an OpenCode Zen API key');
+    expect(keyPlaceholder('auto')).toBe('Paste a TypeSafe or OpenCode Zen key — apikey_… is TypeSafe');
   });
 });
 

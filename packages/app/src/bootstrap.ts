@@ -121,7 +121,13 @@ export function bootstrap(options: BootstrapOptions): Bootstrapped {
 
   // Resolves the Jev key (config → app store → env → OpenCode) and mirrors
   // its source, never the key, into `ui.ai` (08 Q15).
-  const ai = createAiService({ config, store });
+  // The provider picked in AI Settings (Client State) wins over `[ai]
+  // provider`; config only decides until something is picked (ADR 0008).
+  const ai = createAiService({
+    config,
+    store,
+    providerSetting: clientState.aiProvider ?? config.ai.provider,
+  });
 
   return {
     config,

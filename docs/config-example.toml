@@ -142,16 +142,27 @@ bright_white = "#ffffff"
 # The contents of your screens are sent only if you turn on
 # `screen_context` below, which is off. Off entirely without a key.
 [ai]
-# Provider key. Unset means, in order: the key stored from the app's
-# AI Settings... dialog, $SUPERTERMINAL_AI_API_KEY, then OpenCode's own
-# login (~/.local/share/opencode/auth.json).
+# Which provider ranks the palette: "auto", "typesafe" or "zen".
+# "auto" picks TypeSafe when a TypeSafe key is found, else OpenCode Zen.
+# TypeSafe keys (apikey_...) come from https://console.typesafe.ai/keys
+# or $TYPESAFE_API_KEY; OpenCode Zen keys from OpenCode's own login.
+# The AI Settings... dialog can override this for this machine.
+provider = "auto"
+# Key for the selected provider; with provider = "auto" an apikey_...
+# key is TypeSafe's, anything else OpenCode Zen's. Unset means, in
+# order: the key stored from the app's AI Settings... dialog, the
+# environment ($TYPESAFE_API_KEY, $SUPERTERMINAL_AI_API_KEY), then
+# OpenCode's own login (~/.local/share/opencode/auth.json).
 # api_key = ""
 # Rank palette rows with Jev when a key is found.
 palette = true
-# Provider endpoint (TypeSafe System One shape). Default: OpenCode Zen.
-endpoint = "https://opencode.ai/zen/v1/systemone"
-# Model id at that endpoint.
-model = "jev-1.13"
+# Override the provider's endpoint (System One shape). Unset: the
+# selected provider's own - https://api.typesafe.ai/v1/systemone
+# (TypeSafe) or https://opencode.ai/zen/v1/systemone (OpenCode Zen).
+# endpoint = "https://api.typesafe.ai/v1/systemone"
+# Override the model id at that endpoint. Unset: the provider's own -
+# jev-1.13.0 (TypeSafe) or jev-1.13 (OpenCode Zen).
+# model = "jev-1.13.0"
 # Also send the VISIBLE SCREEN TEXT of your tabs when you type in the
 # palette, so a tab can be found by what it is showing ("the one with
 # the failing test") and not just by its title. Only the last few lines
